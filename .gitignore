@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Node
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Logs
+*.log
+
+# Runtime data（上传文件 / Chroma 向量库）
+backend/app/data/
+backend/data/
+data/
+*.sqlite3
+*.db
+
+# Python 测试 / 覆盖率
+.coverage
+htmlcov/

@@ -1,0 +1,74 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: eai-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-eai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-eai_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-eai}
+    ports:
+      - "${POSTGRES_EXPOSED_PORT:-5433}:5432"
+    volumes:
+      - eai_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-eai} -d ${POSTGRES_DB:-eai}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    container_name: eai-backend
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-eai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-eai_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-eai}
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-1440}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      SEED_ON_STARTUP: "true"
+      # ---------- AI / RAG ----------
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5:1.5b}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-m3}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      CHROMA_DIR: /app/data/chroma
+      UPLOAD_DIR: /app/data/uploads
+    ports:
+      - "8000:8000"
+    volumes:
+      - eai_data:/app/data
+    # 容器访问宿主机原生 Ollama（Metal GPU 加速）
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    container_name: eai-frontend
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_started
+
+volumes:
+  eai_db_data:
+  eai_data:
