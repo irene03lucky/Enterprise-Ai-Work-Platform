@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# =============================================================
+# EAI AutoDL 离线部署 - 一次性环境安装脚本
+# 用法：把整个项目上传到 /root/autodl-tmp/eai 后执行
+#   bash deploy/autodl/setup.sh
+# =============================================================
+set -e
+
+EAI_DIR="${EAI_DIR:-/root/autodl-tmp/eai}"
+DATA_DIR="/root/autodl-tmp/eai-data"
+
+# 自动生成强随机凭据（幂等：重跑不改变已有 .env）
+SECRET_KEY="$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+PG_PASSWORD="$(openssl rand -hex 16 2>/dev/null || head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+
+echo "==> [1/7] AutoDL 学术加速（下载用，失败可忽略）"
+source /etc/network_turbo 2>/dev/null || true
+
+echo "==> [2/7] 系统依赖"
+apt-get update -y
+apt-get install -y curl ca-certificates postgresql postgresql-contrib caddy
+# Node 20（Next.js 14 需要 >= 18.17）
+if ! command -v node >/dev/null || [ "$(node -v | cut -dv -f2 | cut -d. -f1)" -lt 18 ]; then
+  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+  apt-get install -y nodejs
+fi
+
+echo "==> [3/7] Ollama + 模型（GPU 推理）"
+if ! command -v ollama >/dev/null; then
+  curl -fsSL https://ollama.com/install.sh | sh
+fi
+systemctl enable ollama 2>/dev/null || true
+systemctl start  ollama 2>/dev/null || (nohup ollama serve >/root/autodl-tmp/ollama.log 2>&1 &)
+sleep 3
+# 默认模型（可按需增删；后端模型注册表会自动发现全部已安装模型）
+ollama pull qwen2.5:7b || echo "!! 模型拉取失败，可稍后手动 ollama pull"
+
+echo "==> [4/7] PostgreSQL 初始化（数据落 autodl-tmp）"
+mkdir -p "$DATA_DIR/pg"
+systemctl enable postgresql 2>/dev/null || true
+systemctl start  postgresql 2>/dev/null || (pg_ctlcluster 16 main start 2>/dev/null || pg_ctlcluster 15 main start 2>/dev/null || pg_ctlcluster 14 main start)
+sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='eai'" | grep -q 1 || \
+  sudo -u postgres psql -c "CREATE USER eai WITH PASSWORD '$PG_PASSWORD';"
+sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='eai'" | grep -q 1 || \
+  sudo -u postgres psql -c "CREATE DATABASE eai OWNER eai;"
+
+echo "==> [5/7] 后端 Python 环境"
+cd "$EAI_DIR/backend"
+python3 -m venv .venv 2>/dev/null || true
+source .venv/bin/activate
+pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+echo "==> [6/7] 前端构建（先在下方填入 AutoDL 自定义服务公网地址）"
+# AutoDL 控制台 -> 自定义服务 开通后，会得到类似：
+#   https://xxxxx-6006.se.autodl.com
+# 把它填到 export PUBLIC_BASE_URL=... 再重跑本脚本，或手动执行本步。
+if [ -n "$PUBLIC_BASE_URL" ]; then
+  cd "$EAI_DIR/frontend"
+  export NEXT_PUBLIC_API_URL="${PUBLIC_BASE_URL%/}/api"
+  npm install --registry=https://registry.npmmirror.com
+  npm run build
+else
+  echo "!! 跳过前端构建：未设置 PUBLIC_BASE_URL（AutoDL 自定义服务地址）"
+  echo "   设置后执行：PUBLIC_BASE_URL=https://xxxxx-6006.se.autodl.com bash deploy/autodl/setup.sh"
+fi
+
+echo "==> [7/7] 生成后端 .env（生产凭据）"
+if [ ! -f "$EAI_DIR/backend/.env" ]; then
+  cat > "$EAI_DIR/backend/.env" <<EOF
+# ===== 生产配置（务必修改密码/密钥）=====
+# JWT 签名密钥：部署时自动生成随机值
+SECRET_KEY=$SECRET_KEY
+
+POSTGRES_HOST=127.0.0.1
+POSTGRES_PORT=5432
+POSTGRES_USER=eai
+POSTGRES_PASSWORD=$PG_PASSWORD
+POSTGRES_DB=eai
+
+# LLM：本地 Ollama（模型注册表自动发现全部已安装模型）
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+LLM_MODEL=qwen2.5:7b
+
+# 向量模型（与 Chroma 存量一致，勿随意更换）
+EMBEDDING_MODEL=bge-m3
+
+# RAG / 向量数据（落持久盘）
+CHROMA_DIR=$DATA_DIR/chroma
+UPLOAD_DIR=$DATA_DIR/uploads
+
+# Agent 编排：auto（支持 tool-calling 的模型走 ReAct，小模型自动降级 RAG）
+AGENT_MODE=auto
+
+# 生产关闭演示数据种子
+SEED_ON_STARTUP=0
+EOF
+fi
+
+echo ""
+echo "✅ 环境安装完成。下一步："
+echo "   1) 修改 $EAI_DIR/backend/.env 中的密码/密钥"
+echo "   2) PUBLIC_BASE_URL=... bash deploy/autodl/setup.sh  （补前端构建）"
+echo "   3) bash deploy/autodl/start.sh 启动全部服务"
