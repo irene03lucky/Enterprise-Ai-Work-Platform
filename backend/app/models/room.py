@@ -20,6 +20,32 @@ class RoomStatus(str, Enum):
     COMPLETED = "COMPLETED"
 
 
+class RoomStage(str, Enum):
+    """项目阶段：接触 → 洽谈 → 合同打磨 → 签约 → 交付 → 验收。
+
+    阶段是项目对外的「大进度」，相关部门也能看到；
+    详细进展、风险与内部 Work Event 只对项目成员/管理层开放。
+    """
+
+    CONTACT = "CONTACT"
+    NEGOTIATION = "NEGOTIATION"
+    CONTRACT_DRAFT = "CONTRACT_DRAFT"
+    SIGNED = "SIGNED"
+    DELIVERY = "DELIVERY"
+    ACCEPTANCE = "ACCEPTANCE"
+
+
+class EventVisibility(str, Enum):
+    """工作事件可见范围。
+
+    PUBLIC：公开里程碑（相关部门可见）
+    INTERNAL：内部事件（仅项目成员 / 管理层可见）
+    """
+
+    PUBLIC = "PUBLIC"
+    INTERNAL = "INTERNAL"
+
+
 class WorkEventType(str, Enum):
     MEETING = "meeting"
     WORK_LOG = "work_log"
@@ -41,6 +67,13 @@ class Room(BaseModel, OwnershipMixin):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[RoomStatus] = mapped_column(
         String(20), default=RoomStatus.ACTIVE, nullable=False
+    )
+    # 项目阶段（对相关部门也可见的「大进度」）
+    stage: Mapped[RoomStage] = mapped_column(
+        String(20), default=RoomStage.CONTACT, nullable=False
+    )
+    stage_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
     members = relationship("RoomMember", back_populates="room", cascade="all, delete-orphan")
@@ -105,6 +138,10 @@ class WorkEvent(BaseModel):
     )
     type: Mapped[WorkEventType] = mapped_column(String(30), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    # PUBLIC=公开里程碑（相关部门可见）；INTERNAL=内部事件（仅项目成员/管理层）
+    visibility: Mapped[EventVisibility] = mapped_column(
+        String(20), default=EventVisibility.INTERNAL, nullable=False
+    )
     event_date: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
     )

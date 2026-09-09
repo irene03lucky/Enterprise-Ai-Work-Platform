@@ -260,7 +260,7 @@ export function EmployeeFormModal({
     mode === "edit" ? (initial?.department_id ?? "") : (lockedDepartment ?? "")
   );
   const [position, setPosition] = useState(initial?.position ?? "");
-  const [status, setStatus] = useState<EmployeeStatus>(initial?.status ?? "ACTIVE");
+  const [status, setStatus] = useState<EmployeeStatus>(initial?.status ?? "ONLINE");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 

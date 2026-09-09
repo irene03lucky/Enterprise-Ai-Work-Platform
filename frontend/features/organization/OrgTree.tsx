@@ -19,17 +19,19 @@ export type Selection =
   | { type: "employee"; id: string };
 
 const STATUS_DOT: Record<EmployeeStatus, string> = {
-  ACTIVE: "bg-green-500",
-  LEAVE: "bg-amber-500",
+  ONLINE: "bg-green-500",
+  IN_MEETING: "bg-amber-400",
+  CUSTOMER_VISIT: "bg-purple-500",
   BUSINESS_TRIP: "bg-blue-500",
+  LEAVE: "bg-orange-500",
   OFFLINE: "bg-gray-300",
 };
 
 export function StatusBadge({ status }: { status: EmployeeStatus }) {
   return (
     <span className="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-gray-50 px-2 py-0.5 text-[11px] text-gray-600">
-      <span className={`h-1.5 w-1.5 rounded-full ${STATUS_DOT[status]}`} />
-      {EMPLOYEE_STATUS_LABEL[status]}
+      <span className={`h-1.5 w-1.5 rounded-full ${STATUS_DOT[status] ?? "bg-gray-300"}`} />
+      {EMPLOYEE_STATUS_LABEL[status] ?? status}
     </span>
   );
 }
@@ -68,7 +70,7 @@ function EmployeeRow({ employee, selected, onSelect }: EmployeeRowProps) {
         )}
       </span>
       <span title={EMPLOYEE_STATUS_LABEL[employee.status]}>
-        <span className={`block h-2 w-2 rounded-full ${STATUS_DOT[employee.status]}`} />
+        <span className={`block h-2 w-2 rounded-full ${STATUS_DOT[employee.status] ?? "bg-gray-300"}`} />
       </span>
     </button>
   );

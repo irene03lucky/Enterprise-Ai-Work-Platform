@@ -2,14 +2,15 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { getToken } from "@/lib/api";
 
-export default function Home() {
+export default function HomeRedirect() {
   const router = useRouter();
-
   useEffect(() => {
-    router.replace(getToken() ? "/assistant" : "/login");
+    router.replace("/workbench");
   }, [router]);
-
-  return null;
+  return (
+    <div className="flex h-full items-center justify-center text-sm text-gray-400">
+      正在进入 Work Center…
+    </div>
+  );
 }

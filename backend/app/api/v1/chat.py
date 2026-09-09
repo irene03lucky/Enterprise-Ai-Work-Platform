@@ -40,12 +40,18 @@ async def chat(
     }
 
     history = [m.model_dump() for m in data.history]
+    # LangGraph MemorySaver 服务端记忆：优先用会话 ID 作 thread_id
+    thread_id = data.conversation_id or f"chat:{company.id}:{current_user.id}"
+    from app.ai import model_registry
+
     generator = agent_service.stream_agent_answer(
         company_id=company.id,
         company_name=company.name,
         profile=profile,
         history=history,
         question=data.message,
+        thread_id=thread_id,
+        model_id=model_registry.resolve_enabled(data.model_id),
     )
     return StreamingResponse(
         generator,

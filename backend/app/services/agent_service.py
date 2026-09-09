@@ -8,10 +8,12 @@ Agent 失败时自动降级为直接 RAG 链（检索 → 生成），保证可�
 
 import json
 import logging
+import re
 from collections.abc import AsyncGenerator
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import create_react_agent
 
 from app.ai.llm import get_chat_model
@@ -19,6 +21,16 @@ from app.core.config import settings
 from app.services import rag_service
 
 logger = logging.getLogger(__name__)
+
+# 进程内共享 Checkpointer（LangGraph MemorySaver）：
+# 同一 thread_id 的多轮对话状态在服务端持久化，Agent 每轮自动携带完整历史与工具调用轨迹。
+# 注意：MemorySaver 进程内存活，容器重启后记忆清零（会话文本仍持久化在 conversations 表）。
+_checkpointer = MemorySaver()
+
+
+def get_checkpointer() -> MemorySaver:
+    """共享的 LangGraph 记忆 Checkpointer（Knowledge Agent / Project Agent 共用）。"""
+    return _checkpointer
 
 # 已验证无法稳定 tool-calling 的本地小模型：跳过 Agent 编排，直接 RAG
 _SMALL_MODELS_WITHOUT_TOOL_CALLING = {
@@ -38,7 +50,9 @@ SYSTEM_PROMPT_TEMPLATE = """你是「{company_name}」的企业 AI 工作助手�
 1. 当问题涉及公司制度、规范、产品、项目资料等企业内部信息时，必须先调用 knowledge_search 工具检索企业知识库，再基于检索结果回答；
 2. 回答企业相关问题时必须以检索到的资料为依据，资料中没有的信息要明确说明"企业知识库中暂无相关资料"；
 3. 与企业知识无关的通用问题可以直接回答；
-4. 使用简体中文，简洁、专业、条理清晰，适当使用列表。"""
+4. 需要检索时必须立即调用 knowledge_search 工具，并基于工具返回的资料作答；
+   严禁只回复"请稍等/正在查询"之类的过渡语而不调用工具——要么调用工具后回答，要么直接回答；
+5. 使用简体中文，简洁、专业、条理清晰，适当使用列表。"""
 
 FALLBACK_PROMPT_TEMPLATE = """请基于以下企业知识库资料回答问题。如果资料不足以回答，请明确说明。
 
@@ -53,6 +67,18 @@ RAG_SYSTEM_PROMPT = """你是企业的 AI 工作助手。请严格依据提供�
 - 资料中没有的信息，如实说明"企业知识库中暂无相关资料"，不要编造；
 - 使用简体中文，简洁、专业、条理清晰，适当使用列表；
 - 涉及具体数字（金额、天数、标准）时必须与资料一致。"""
+
+
+def supports_tool_calling() -> bool:
+    """当前生成模型是否能稳定使用 LangGraph tool-calling Agent。
+
+    本地小模型（≤3B）tool-calling 不可靠，会跳过检索直接作答，
+    因此 auto 模式下这些模型走「先检索后生成」的确定性链路。
+    """
+    return not (
+        settings.LLM_PROVIDER == "ollama"
+        and settings.LLM_MODEL in _SMALL_MODELS_WITHOUT_TOOL_CALLING
+    )
 
 
 def _sse(event: dict) -> str:
@@ -72,7 +98,10 @@ def _make_knowledge_search_tool(company_id: str, sources_bag: list[dict]):
 
         results = rag_service.search(company_id, query, k=4)
         if not results:
-            return "企业知识库为空或暂无相关资料。可以建议用户先在 Knowledge 模块上传文档。"
+            return (
+                "当前企业知识库中未检索到足够信息。请如实告知用户，"
+                "并建议在 Knowledge 模块上传相关文档后重试；不要编造答案。"
+            )
 
         formatted: list[str] = []
         for i, (text, meta) in enumerate(results, start=1):
@@ -188,7 +217,7 @@ async def _fallback_rag(
         yield _sse(
             {
                 "type": "token",
-                "content": "企业知识库中暂无相关资料。你可以在 Knowledge 模块上传企业文档，我将基于它们为你解答。",
+                "content": "当前企业知识库中未检索到足够信息。你可以在 Knowledge 模块上传企业文档，我将基于它们为你解答。",
             }
         )
     yield _sse({"type": "sources", "sources": _dedup_sources(sources_bag)})
@@ -266,6 +295,8 @@ async def stream_agent_answer(
     profile: dict,
     history: list[dict],
     question: str,
+    thread_id: str | None = None,
+    model_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Knowledge Agent 主入口：SSE 事件流。
 
@@ -279,14 +310,12 @@ async def stream_agent_answer(
       —— 小模型 tool-calling 不可靠，会跳过检索直接幻觉作答。
     """
     mode = settings.AGENT_MODE
-    if mode == "auto":
-        is_small_local = (
-            settings.LLM_PROVIDER == "ollama"
-            and settings.LLM_MODEL in _SMALL_MODELS_WITHOUT_TOOL_CALLING
-        )
-        use_agent = not is_small_local
-    else:
-        use_agent = mode == "always"
+    if mode == "never":
+        use_agent = False
+    elif mode == "always":
+        use_agent = True
+    else:  # auto
+        use_agent = supports_tool_calling()
 
     if not use_agent:
         yield _sse({"type": "status", "content": "正在检索企业知识库…"})
@@ -299,16 +328,28 @@ async def stream_agent_answer(
 
     sources_bag: list[dict] = []
     knowledge_search = _make_knowledge_search_tool(company_id, sources_bag)
-    model = get_chat_model()
-    agent = create_react_agent(model=model, tools=[knowledge_search])
+    model = get_chat_model(model_id)
+    agent = create_react_agent(
+        model=model, tools=[knowledge_search], checkpointer=_checkpointer
+    )
     messages = _build_messages(company_name, profile, history, question)
+    # 服务端记忆（MemorySaver）：thread_id 存在时信任 Checkpointer 状态，避免历史重复注入
+    if thread_id:
+        messages = [messages[0], messages[-1]]
+
+    config: dict = {"recursion_limit": 30}
+    if thread_id:
+        config["configurable"] = {"thread_id": thread_id}
 
     emitted = False
+    tool_called = False
+    streamed_text = ""
     try:
         async for event in agent.astream_events(
-            {"messages": messages}, version="v2", config={"recursion_limit": 30}
+            {"messages": messages}, version="v2", config=config
         ):
             if event["event"] == "on_tool_start" and event["name"] == "knowledge_search":
+                tool_called = True
                 yield _sse({"type": "status", "content": "正在检索企业知识库…"})
             elif event["event"] == "on_chat_model_stream":
                 chunk = event["data"].get("chunk")
@@ -326,6 +367,7 @@ async def stream_agent_answer(
                     )
                 if text:
                     emitted = True
+                    streamed_text += text
                     yield _sse({"type": "token", "content": text})
     except Exception:  # noqa: BLE001
         logger.exception("Knowledge Agent 执行异常，降级为直接 RAG")
@@ -337,6 +379,20 @@ async def stream_agent_answer(
             return
         yield _sse({"type": "error", "message": "回答生成中断，请重试"})
         yield _sse({"type": "done"})
+        return
+
+    # RAG 对话断链修复（T04.8）：Agent 结束但全程未调用工具，且已流出的文本
+    # 是"承诺去查"的过渡话术（如"请稍等，我将为您查询"）→ 立即降级为确定性
+    # RAG（检索 → 生成），保证用户拿到最终答案与来源引用，而不是对话中断。
+    if not tool_called and re.search(
+        r"(请稍等|稍等片刻|正在查询|正在检索|查询中|为您查询|马上(查询|检索)|让我(查询|查一下|检索)|(我|我来|帮你)(查询|查一下|检索))",
+        streamed_text,
+    ):
+        yield _sse({"type": "status", "content": "正在检索企业知识库…"})
+        async for evt in _fallback_rag(
+            company_id, question, sources_bag, history=history
+        ):
+            yield evt
         return
 
     # 小模型偶发不输出内容（如空回复）→ 降级

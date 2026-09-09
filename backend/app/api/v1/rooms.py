@@ -4,11 +4,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_company_with_access, get_current_user
 from app.core.database import get_db
-from app.models import Company, User
+from app.models import Company, Employee, User
 from app.schemas.chat import ChatRequest
 from app.schemas.room import (
     RoomCreate,
@@ -21,7 +22,7 @@ from app.schemas.room import (
     WorkEventCreate,
     WorkEventOut,
 )
-from app.services import agent_service, room_service
+from app.services import project_agent_service, room_service, task_service
 
 router = APIRouter(prefix="/companies/{company_id}/rooms", tags=["rooms"])
 
@@ -37,10 +38,31 @@ async def get_room_of_company(
     return room
 
 
-def _room_out(room, member_count: int, event_count: int) -> RoomOut:
+STAGE_LABELS = {
+    "CONTACT": "接触",
+    "NEGOTIATION": "洽谈",
+    "CONTRACT_DRAFT": "合同打磨",
+    "SIGNED": "签约",
+    "DELIVERY": "交付",
+    "ACCEPTANCE": "验收",
+}
+
+
+def _room_out(
+    room,
+    member_count: int,
+    event_count: int,
+    open_task_count: int = 0,
+    access_level: str = room_service.ACCESS_RELATED,
+) -> RoomOut:
     out = RoomOut.model_validate(room)
     out.member_count = member_count
     out.event_count = event_count
+    out.open_task_count = open_task_count
+    out.access_level = access_level
+    stage_value = room.stage.value if hasattr(room.stage, "value") else str(room.stage)
+    out.stage = stage_value
+    out.stage_label = STAGE_LABELS.get(stage_value, stage_value)
     return out
 
 
@@ -50,11 +72,20 @@ def _room_out(room, member_count: int, event_count: int) -> RoomOut:
 @router.get("", response_model=list[RoomOut])
 def list_rooms(
     company: Annotated[Company, Depends(get_company_with_access)],
+    current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
 ):
+    rows = room_service.list_rooms(db, company.id)
+    open_counts = task_service.count_open_tasks(db, [r.id for r, _, _ in rows])
     return [
-        _room_out(room, m, e)
-        for room, m, e in room_service.list_rooms(db, company.id)
+        _room_out(
+            room,
+            m,
+            e,
+            open_counts.get(room.id, 0),
+            room_service.get_access_level(db, room, current_user.id),
+        )
+        for room, m, e in rows
     ]
 
 
@@ -66,29 +97,37 @@ def create_room(
     db: Annotated[Session, Depends(get_db)],
 ):
     room = room_service.create_room(db, company, data, owner_id=current_user.id)
-    return _room_out(room, 1, 0)
+    return _room_out(room, 1, 0, 0)
 
 
 @router.get("/{room_id}", response_model=RoomOut)
 def get_room(
     room: Annotated[object, Depends(get_room_of_company)],
+    current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
 ):
+    access_level = room_service.get_access_level(db, room, current_user.id)
     members = room_service.list_members(db, room.id)
-    events = room_service.list_events(db, room.id, limit=1000)
-    return _room_out(room, len(members), len(events))
+    events = room_service.list_events(
+        db, room.id, limit=1000, access_level=access_level
+    )
+    open_count = task_service.count_open_tasks(db, [room.id]).get(room.id, 0)
+    return _room_out(room, len(members), len(events), open_count, access_level)
 
 
 @router.patch("/{room_id}", response_model=RoomOut)
 def update_room(
     data: RoomUpdate,
     room: Annotated[object, Depends(get_room_of_company)],
+    current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
 ):
     room = room_service.update_room(db, room, data)
+    access_level = room_service.get_access_level(db, room, current_user.id)
     members = room_service.list_members(db, room.id)
-    events = room_service.list_events(db, room.id, limit=1000)
-    return _room_out(room, len(members), len(events))
+    events = room_service.list_events(db, room.id, limit=1000, access_level=access_level)
+    open_count = task_service.count_open_tasks(db, [room.id]).get(room.id, 0)
+    return _room_out(room, len(members), len(events), open_count, access_level)
 
 
 @router.delete("/{room_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -104,6 +143,8 @@ def delete_room(
 
 def _member_out(m) -> RoomMemberOut:
     emp = m.employee
+    status_value = getattr(emp.status, "value", emp.status) if emp else None
+    twin_value = getattr(emp.ai_twin_status, "value", emp.ai_twin_status) if emp else None
     return RoomMemberOut(
         id=m.id,
         room_id=m.room_id,
@@ -113,6 +154,9 @@ def _member_out(m) -> RoomMemberOut:
         user_email=emp.user.email if emp and emp.user else None,
         position=emp.position if emp else None,
         department_name=emp.department.name if emp and emp.department else None,
+        human_status=str(status_value) if status_value else None,
+        ai_twin_status=str(twin_value) if twin_value else None,
+        ai_twin_display_name=emp.ai_twin_display_name if emp else None,
         created_at=m.created_at,
     )
 
@@ -213,9 +257,13 @@ def _event_out(e) -> WorkEventOut:
 @router.get("/{room_id}/events", response_model=list[WorkEventOut])
 def list_events(
     room: Annotated[object, Depends(get_room_of_company)],
+    current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
 ):
-    return [_event_out(e) for e in room_service.list_events(db, room.id)]
+    """Timeline：项目成员/管理层看全部事件，其他成员只看公开里程碑。"""
+    access_level = room_service.get_access_level(db, room, current_user.id)
+    events = room_service.list_events(db, room.id, access_level=access_level)
+    return [_event_out(e) for e in events]
 
 
 @router.post("/{room_id}/events", response_model=WorkEventOut, status_code=status.HTTP_201_CREATED)
@@ -258,16 +306,31 @@ def delete_event(
 async def room_chat(
     data: ChatRequest,
     room: Annotated[object, Depends(get_room_of_company)],
+    current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
 ):
-    """Room 内 AI 对话：SSE 流式（协议同 assistant chat，含来源）。"""
-    room_context = room_service.build_room_context(db, room)
+    """Project Agent 对话（SSE 流式）。
+
+    事件：status / intent（QUERY|ACTION|FOLLOW_UP）/ token / sources
+    / task_proposals（任务提案，需用户确认后创建）/ done / error。
+    """
     history = [m.model_dump() for m in data.history]
-    generator = agent_service.stream_room_answer(
-        company_id=room.company_id,
-        room_context=room_context,
+    employee = db.scalar(
+        select(Employee).where(
+            Employee.company_id == room.company_id, Employee.user_id == current_user.id
+        )
+    )
+    access_level = room_service.get_access_level(db, room, current_user.id)
+    from app.ai import model_registry
+
+    generator = project_agent_service.stream_project_answer(
+        db=db,
+        room=room,
         history=history,
         question=data.message,
+        current_employee_id=employee.id if employee else None,
+        access_level=access_level,
+        model_id=model_registry.resolve_enabled(data.model_id),
     )
     return StreamingResponse(
         generator,

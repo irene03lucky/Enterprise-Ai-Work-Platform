@@ -100,6 +100,16 @@ export function PlusIcon(props: P) {
   );
 }
 
+export function CalendarIcon(props: P) {
+  return (
+    <svg {...base(props)}>
+      <rect x="3" y="4" width="18" height="17" rx="2" />
+      <path d="M3 9h18" />
+      <path d="M8 2v4M16 2v4" />
+    </svg>
+  );
+}
+
 export function TrashIcon(props: P) {
   return (
     <svg {...base(props)}>

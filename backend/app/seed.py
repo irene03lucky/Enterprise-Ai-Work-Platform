@@ -7,6 +7,7 @@
 """
 
 import threading
+from datetime import datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -243,6 +244,86 @@ def _ensure_demo_room(db: Session, company: Company) -> None:
     print("[seed] 演示项目房间「品牌官网升级项目」已就绪")
 
 
+def _ensure_demo_tasks(db: Session, company: Company) -> None:
+    """幂等补充演示任务（待办 / 进行中 / 已完成，含 AI 对话来源示例）。"""
+    from datetime import date, timedelta
+
+    from app.models import Task, TaskSource, TaskStatus
+
+    room = db.scalar(select(Room).where(Room.company_id == company.id))
+    if room is None:
+        return
+    existing = db.scalar(select(Task).where(Task.room_id == room.id))
+    if existing is not None:
+        return
+
+    employees = list(
+        db.scalars(select(Employee).where(Employee.company_id == company.id)).all()
+    )
+    by_name = {e.user.name if e.user else "": e for e in employees}
+    admin_emp = next((e for e in employees if e.user and e.user.email == ADMIN_EMAIL), None)
+    zhangsan = by_name.get("张三")
+
+    today = date.today()
+    demos = [
+        (
+            "整理数字人导览需求清单并给出报价",
+            "客户希望增加数字人导览，预算控制在 50 万元以内，需先出需求清单与区间报价。",
+            zhangsan,
+            today + timedelta(days=5),
+            TaskStatus.TODO,
+            TaskSource.CHAT,
+            "客户希望增加数字人导览，预算控制在50万元以内",
+        ),
+        (
+            "完成官网首页高保真设计稿",
+            "基于新品牌视觉规范输出首页高保真稿，评审通过后进入切图。",
+            admin_emp,
+            today + timedelta(days=2),
+            TaskStatus.IN_PROGRESS,
+            TaskSource.WORK_EVENT,
+            "完成官网首页改版的低保真设计稿，已同步设计团队评审。",
+        ),
+        (
+            "跟进：官网正式上线后同步客户并收集反馈",
+            "上线后第一时间告知客户，并收集使用反馈形成跟进事项。",
+            admin_emp,
+            None,
+            TaskStatus.TODO,
+            TaskSource.FOLLOW_UP,
+            "上线以后告诉我",
+        ),
+        (
+            "输出首页低保真设计稿并组织评审",
+            "已完成，评审结论：结构通过，视觉待细化。",
+            admin_emp,
+            today - timedelta(days=1),
+            TaskStatus.DONE,
+            TaskSource.MANUAL,
+            None,
+        ),
+    ]
+    for title, desc, assignee, due, tstatus, source, quote in demos:
+        db.add(
+            Task(
+                company_id=company.id,
+                room_id=room.id,
+                title=title,
+                description=desc,
+                assignee_employee_id=assignee.id if assignee else None,
+                due_date=due,
+                status=tstatus,
+                source=source,
+                source_quote=quote,
+                created_by=company.owner_id,
+                owner_id=company.owner_id,
+                completed_at=datetime.utcnow() if tstatus == TaskStatus.DONE else None,
+            )
+        )
+    db.commit()
+    print("[seed] 演示任务（待办/进行中/已完成/跟进）已就绪")
+
+
 def run_seed() -> None:
     db = SessionLocal()
     try:
@@ -251,6 +332,7 @@ def run_seed() -> None:
             # 已初始化过企业：仅补充默认知识空间与演示房间（升级幂等）
             _ensure_default_knowledge(db, company)
             _ensure_demo_room(db, company)
+            _ensure_demo_tasks(db, company)
             return
 
         admin = _get_or_create_user(db, "平台管理员", ADMIN_EMAIL, ADMIN_PASSWORD)
@@ -322,9 +404,10 @@ def run_seed() -> None:
         db.commit()
         print(f"[seed] 演示数据已就绪，管理员账号: {ADMIN_EMAIL} / {ADMIN_PASSWORD}")
 
-        # 默认知识空间 + 示例文档（自动向量化）+ 演示项目房间
+        # 默认知识空间 + 示例文档（自动向量化）+ 演示项目房间 + 演示任务
         _ensure_default_knowledge(db, company)
         _ensure_demo_room(db, company)
+        _ensure_demo_tasks(db, company)
     finally:
         db.close()
 

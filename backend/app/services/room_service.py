@@ -6,14 +6,20 @@ from sqlalchemy.orm import Session, selectinload
 from app.models import (
     Company,
     Employee,
+    EventVisibility,
     KnowledgeDocument,
     Room,
     RoomDocument,
     RoomMember,
+    RoomStage,
     RoomStatus,
     WorkEvent,
 )
 from app.schemas.room import RoomCreate, RoomUpdate, WorkEventCreate
+
+# 访问深度：member=项目成员/管理层（全量）| related=普通相关部门（阶段 + 公开里程碑）
+ACCESS_MEMBER = "member"
+ACCESS_RELATED = "related"
 
 
 # ---------- Room CRUD ----------
@@ -59,6 +65,7 @@ def create_room(db: Session, company: Company, data: RoomCreate, owner_id: str |
         name=data.name,
         description=data.description,
         status=data.status,
+        stage=data.stage,
         owner_id=owner_id,
     )
     db.add(room)
@@ -78,11 +85,44 @@ def create_room(db: Session, company: Company, data: RoomCreate, owner_id: str |
 
 
 def update_room(db: Session, room: Room, data: RoomUpdate) -> Room:
-    for field, value in data.model_dump(exclude_unset=True).items():
+    payload = data.model_dump(exclude_unset=True)
+    for field, value in payload.items():
         setattr(room, field, value)
+    if "stage" in payload:
+        from datetime import datetime, timezone
+
+        room.stage_updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(room)
     return room
+
+
+# ---------- 访问深度（不同角色看到不同深度） ----------
+
+
+def get_access_level(db: Session, room: Room, user_id: str | None) -> str:
+    """判断访问者可见深度。
+
+    - member：项目成员 / 企业所有者（管理层）→ 详细进展、风险、内部 Work Event
+    - related：其他企业内部成员（含相关部门）→ 项目大阶段 + 公开里程碑
+    """
+    if user_id is None:
+        return ACCESS_RELATED
+    if room.owner_id == user_id:
+        return ACCESS_MEMBER
+    is_member = db.scalar(
+        select(RoomMember.id).where(
+            RoomMember.room_id == room.id,
+            RoomMember.employee_id.in_(
+                select(Employee.id).where(
+                    Employee.company_id == room.company_id, Employee.user_id == user_id
+                )
+            ),
+        )
+    )
+    if is_member is not None:
+        return ACCESS_MEMBER
+    return ACCESS_RELATED
 
 
 def delete_room(db: Session, room: Room) -> None:
@@ -181,17 +221,22 @@ def remove_room_document(db: Session, room: Room, document_id: str) -> None:
 # ---------- Work Event / Timeline ----------
 
 
-def list_events(db: Session, room_id: str, limit: int = 200) -> list[WorkEvent]:
-    """Timeline：事件按时间倒序。"""
-    return list(
-        db.scalars(
-            select(WorkEvent)
-            .where(WorkEvent.room_id == room_id)
-            .options(selectinload(WorkEvent.employee).selectinload(Employee.user))
-            .order_by(WorkEvent.event_date.desc(), WorkEvent.created_at.desc())
-            .limit(limit)
-        ).all()
+def list_events(
+    db: Session, room_id: str, limit: int = 200, access_level: str = ACCESS_MEMBER
+) -> list[WorkEvent]:
+    """Timeline：事件按时间倒序。
+
+    access_level=related 时只返回公开里程碑，内部 Work Event 不可见。
+    """
+    stmt = (
+        select(WorkEvent)
+        .where(WorkEvent.room_id == room_id)
+        .options(selectinload(WorkEvent.employee).selectinload(Employee.user))
     )
+    if access_level != ACCESS_MEMBER:
+        stmt = stmt.where(WorkEvent.visibility == EventVisibility.PUBLIC)
+    stmt = stmt.order_by(WorkEvent.event_date.desc(), WorkEvent.created_at.desc()).limit(limit)
+    return list(db.scalars(stmt).all())
 
 
 def create_event(db: Session, room: Room, data: WorkEventCreate) -> WorkEvent:
@@ -199,6 +244,7 @@ def create_event(db: Session, room: Room, data: WorkEventCreate) -> WorkEvent:
         room_id=room.id,
         type=data.type,
         content=data.content,
+        visibility=data.visibility,
         event_date=data.event_date or None,
     )
     db.add(event)
@@ -217,11 +263,13 @@ def delete_event(db: Session, room: Room, event_id: str) -> None:
 # ---------- 项目上下文（供 Room AI 使用） ----------
 
 
-def build_room_context(db: Session, room: Room, recent_limit: int = 20) -> dict:
-    """汇总项目基本信息、成员、关联文档、最近事件（Timeline 摘要）。"""
+def build_room_context(
+    db: Session, room: Room, recent_limit: int = 20, access_level: str = ACCESS_MEMBER
+) -> dict:
+    """汇总项目基本信息、阶段、成员、关联文档、最近事件（Timeline 摘要）。"""
     members = list_members(db, room.id)
     documents = list_room_documents(db, room.id)
-    events = list_events(db, room.id, limit=recent_limit)
+    events = list_events(db, room.id, limit=recent_limit, access_level=access_level)
 
     member_lines = []
     for m in members:
@@ -245,10 +293,14 @@ def build_room_context(db: Session, room: Room, recent_limit: int = 20) -> dict:
         etype = e.type.value if hasattr(e.type, "value") else str(e.type)
         event_lines.append(f"[{date}][{etype}] {author}: {e.content[:400]}")
 
+    stage_value = room.stage.value if isinstance(room.stage, RoomStage) else str(room.stage)
     return {
         "room_id": room.id,
         "name": room.name,
         "status": room.status.value if isinstance(room.status, RoomStatus) else str(room.status),
+        "stage": stage_value,
+        "stage_label": stage_value,
+        "access_level": access_level,
         "description": room.description,
         "members": member_lines,
         "documents": doc_lines,

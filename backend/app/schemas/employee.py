@@ -2,14 +2,18 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from app.models.employee import EmployeeStatus
+from app.models.employee import (
+    DEFAULT_DELEGATION_PERMISSIONS,
+    AITwinStatus,
+    EmployeeStatus,
+)
 
 
 class EmployeeCreate(BaseModel):
     user_id: str
     department_id: str | None = None
     position: str | None = Field(default=None, max_length=100)
-    status: EmployeeStatus = EmployeeStatus.ACTIVE
+    status: EmployeeStatus = EmployeeStatus.ONLINE
 
 
 class EmployeeUpdate(BaseModel):
@@ -25,6 +29,10 @@ class EmployeeOut(BaseModel):
     department_id: str | None = None
     position: str | None = None
     status: EmployeeStatus
+    ai_twin_name: str | None = None
+    ai_twin_status: AITwinStatus = AITwinStatus.ASSIST
+    ai_permissions: dict[str, bool] = Field(default_factory=lambda: dict(DEFAULT_DELEGATION_PERMISSIONS))
+    ai_twin_display_name: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -44,4 +52,4 @@ class EmployeeUserCreate(BaseModel):
     password: str = Field(min_length=6, max_length=128)
     department_id: str | None = None
     position: str | None = Field(default=None, max_length=100)
-    status: EmployeeStatus = EmployeeStatus.ACTIVE
+    status: EmployeeStatus = EmployeeStatus.ONLINE

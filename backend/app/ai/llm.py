@@ -13,13 +13,23 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from app.core.config import settings
 
 
-def get_chat_model() -> BaseChatModel:
-    """生成模型：默认 Ollama 本地，可切 AutoDL 等 OpenAI 兼容端点。"""
-    if settings.LLM_PROVIDER == "openai-compatible":
+def get_chat_model(model_id: str | None = None) -> BaseChatModel:
+    """生成模型：默认 Ollama 本地，可切 AutoDL 等 OpenAI 兼容端点。
+
+    model_id：用户在 Model Registry 中选择的模型（'ollama:qwen2.5:7b' 或裸模型名）；
+    传入前应已经 model_registry.resolve_enabled 校验。RAG/Chroma 与此选择完全解耦。
+    """
+    from app.ai import model_registry
+
+    provider_override, name_override = model_registry.parse_model_id(model_id)
+    model_name = name_override or settings.LLM_MODEL
+    provider = provider_override or settings.LLM_PROVIDER
+
+    if provider == "openai-compatible":
         from langchain_openai import ChatOpenAI
 
         return ChatOpenAI(
-            model=settings.LLM_MODEL,
+            model=model_name,
             base_url=settings.LLM_BASE_URL or None,
             api_key=settings.LLM_API_KEY or "EMPTY",
             temperature=0.1,
@@ -27,7 +37,7 @@ def get_chat_model() -> BaseChatModel:
     from langchain_ollama import ChatOllama
 
     return ChatOllama(
-        model=settings.LLM_MODEL,
+        model=model_name,
         base_url=settings.OLLAMA_BASE_URL,
         temperature=0.1,
     )

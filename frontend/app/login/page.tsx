@@ -32,7 +32,7 @@ export default function LoginPage() {
         body: { email, password },
       });
       setToken(resp.access_token);
-      router.replace("/assistant");
+      router.replace("/workbench");
     } catch (err) {
       setError(err instanceof Error ? err.message : "操作失败，请重试");
     } finally {

@@ -2,7 +2,7 @@
 
 面向企业内部的 AI 工作平台。目标不是替代飞书、钉钉等办公软件，而是在企业已有办公体系之上建立一个 **AI 工作层**，让 AI 理解企业组织、企业知识、企业项目与员工工作过程。
 
-当前版本：**V3 · EAI-T03 Project Room + Work Event 最小闭环**
+当前版本：**V4 · EAI-T04 Project Agent + Task / Follow-up 最小闭环**
 
 ## 功能概览
 
@@ -21,6 +21,25 @@
 - **Knowledge Agent**：LangGraph ReAct Agent，`@tool knowledge_search` 检索企业知识，支持多轮对话上下文，返回答案 + 来源文档
 - **AI Assistant 集成**：SSE 流式对话，检索状态提示、引用来源展示
 - **健康检查**：`/health/ai` 探测 Ollama 连通性与模型就绪状态
+
+### V3（T03）：Project Room + Work Event
+- **Project Room**：项目工作空间，聚合成员、关联知识文档、工作事件与 Timeline
+- **Work Event**：员工工作过程事件流（会议/工作日志/客户反馈/决策/任务进展/文档更新）
+- **Room 上下文**：项目信息 + 成员 + 关联文档 + Timeline 自动注入 AI 对话
+
+### V4（T04）：Project Agent + Task / Follow-up
+- **Project Agent**：面向项目的 AI 代理，可调用项目信息、Room 上下文、Work Event / Timeline、关联 Knowledge 文档与 Task
+  - 项目状态总结 / 最近变化总结 / 风险识别 / 待处理事项查询
+  - LangGraph ReAct Agent（模型支持 tool-calling 时），小模型自动降级为「结构化上下文 + 意图识别」确定性链路
+- **Task**：轻量任务对象（标题/描述/项目/负责人/截止日期/状态/来源/创建人），状态 `TODO → IN_PROGRESS → DONE`
+- **对话 → Task 三段式意图**：
+  | 类型 | 示例 | AI 行为 |
+  | --- | --- | --- |
+  | 信息查询 | 「项目现在怎么样？」 | 直接回答，**不生成任务** |
+  | 明确行动要求 | 「让李四周五前完成测试」 | 抽取任务信息 → 生成提案 → **确认后**创建 |
+  | Follow-up | 「上线以后告诉我」 | 创建后续跟进事项，保留来源与项目关联 |
+- **Room 联动**：待办事项 / 我的任务 / 已完成任务三个视图，Task 保留 `source`、`source_quote`、`source_event_id` 便于追溯
+- **AI 代理边界**：AI 可查询、总结、识别、建议；不自动替员工做业务决策、不自动对外承诺、不自动修改项目关键状态、不自动发送外部通知；涉及行动的 Task 默认需人工确认
 
 ## 技术栈
 
@@ -65,12 +84,12 @@ EAI/
 │   │   │   └── v1/           # auth / companies / departments / employees / roles / organization / knowledge / chat / health
 │   │   ├── ai/               # AI 层（llm provider / chroma 向量库）
 │   │   ├── core/             # 配置、数据库、安全
-│   │   ├── models/           # SQLAlchemy 模型（含 KnowledgeSpace/KnowledgeDocument）
+│   │   ├── models/           # SQLAlchemy 模型（含 Knowledge/Room/Task）
 │   │   ├── schemas/          # Pydantic 请求/响应模型
-│   │   ├── services/         # 业务逻辑层（含 document_parser / rag_service / agent_service）
+│   │   ├── services/         # 业务逻辑层（document_parser / rag_service / agent_service / project_agent_service / task_service）
 │   │   ├── main.py           # FastAPI 入口
 │   │   └── seed.py           # 演示数据（幂等，含默认知识空间与示例文档）
-│   ├── tests/                # pytest（CRUD / 知识库 / Agent 问答端到端）
+│   ├── tests/                # pytest（CRUD / 知识库 / Agent 问答 / Room / Task / Project Agent 端到端）
 │   └── Dockerfile
 └── frontend/
     ├── app/                  # 页面（login + workspace 五大导航）
@@ -134,13 +153,13 @@ TEST_DATABASE_URI=postgresql://eai:eai_dev_password@localhost:5433/eai_test \
   python -m pytest tests/ -v
 ```
 
-测试覆盖：API 启动、数据库连接、Company/Department/Employee/Role CRUD、组织树、认证与权限边界、知识空间 CRUD、文档上传→解析→向量化管线、Agent 带来源问答、多轮对话上下文。
+测试覆盖：API 启动、数据库连接、Company/Department/Employee/Role CRUD、组织树、认证与权限边界、知识空间 CRUD、文档上传→解析→向量化管线、Agent 带来源问答、多轮对话上下文、Project Room 与 Work Event、Task CRUD 与状态流转、AI 提案确认创建、Project Agent 意图识别（查询/行动/跟进）与端到端闭环。
 
 ## API 一览（/api/v1）
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | /health · /health/db · /health/ai | 健康检查（AI 链路含 Ollama 连通与模型就绪） |
+| GET | /api/v1/health · /api/v1/health/db · /api/v1/health/ai | 健康检查（AI 链路含 Ollama 连通与模型就绪）；另有根路径 `/health` 供容器探活 |
 | POST | /auth/register · /auth/login | 注册 / 登录 |
 | GET | /auth/me | 当前用户及其企业身份（公司+部门+职位） |
 | GET/POST | /companies | 我的企业 / 创建企业 |
@@ -159,12 +178,31 @@ TEST_DATABASE_URI=postgresql://eai:eai_dev_password@localhost:5433/eai_test \
 | POST | /companies/{id}/knowledge/documents/{id}/reprocess | 文档重新处理（失败重试） |
 | DELETE | /companies/{id}/knowledge/documents/{id} | 删除文档（含向量） |
 | POST | /companies/{id}/chat | AI Assistant 对话（SSE 流式，含来源） |
+| GET/POST | /companies/{id}/rooms/{rid}/tasks | 项目任务列表（按状态排序） / 新建任务 |
+| POST | /companies/{id}/rooms/{rid}/tasks/from-proposal | 确认 AI 任务提案并批量创建（保留来源） |
+| PATCH/DELETE | /companies/{id}/rooms/{rid}/tasks/{tid} | 更新任务（含状态流转） / 删除任务 |
+| GET | /companies/{id}/tasks?scope=my\|all\|done | 我的任务 / 全部 / 已完成 |
+| POST | /companies/{id}/rooms/{rid}/chat | **Project Agent** 对话（SSE：status / intent / token / sources / task_proposals / done） |
 
 ## 设计说明
 
 - **非 OA**：不包含即时通讯、审批流、考勤、薪资等传统 OA 功能；员工 `status` 是供未来 AI 理解工作状态的信号，不是考勤。
 - **权限预留**：本轮只做"企业成员可见性"边界（成员或所有者可访问），完整 RBAC 与 `visibility`（PRIVATE/DEPARTMENT/PROJECT/COMPANY）已在模型层预留。
 - **扩展预留**：用户与企业的关系通过 Employee 解耦；Company 是未来 Knowledge / Room / Agent / Connector 的统一挂载点。
+
+## T04 验收闭环
+
+```
+会议 / 工作事件（Work Event）
+   → Project Agent 理解项目上下文
+   → 用户询问「项目现在怎么样？」
+   → AI 依据 Timeline + 任务正确总结（不生成任务）
+   → 用户说「让李四周五前完成测试」
+   → AI 识别行动要求，抽取负责人/时间并请求确认（此刻未创建任何任务）
+   → 用户点击「确认创建」
+   → Task 落库（source=CHAT，保留原文摘录）
+   → Room 中可查看（待办事项 / 我的任务 / 已完成）、更新状态、标记完成
+```
 
 ## 路线图
 

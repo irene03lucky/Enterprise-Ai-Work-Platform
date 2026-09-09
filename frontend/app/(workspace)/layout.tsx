@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { Suspense, type ReactNode } from "react";
 import Sidebar from "@/components/Sidebar";
 import TopBar from "@/components/TopBar";
 import CreateCompanyPanel from "@/components/CreateCompanyPanel";
@@ -24,7 +24,9 @@ function WorkspaceShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="flex h-screen overflow-hidden">
-      <Sidebar />
+      <Suspense fallback={<div className="w-60 shrink-0 border-r border-gray-200 bg-white" />}>
+        <Sidebar />
+      </Suspense>
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar />
         <main className="flex-1 overflow-y-auto">
