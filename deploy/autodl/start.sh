@@ -30,12 +30,12 @@ systemctl start ollama 2>/dev/null || { pgrep -f "ollama serve" >/dev/null || OL
 sleep 2
 
 echo "==> [3/5] 后端 uvicorn :8000"
+# 关键：必须 cd 进 backend 目录再启动——pydantic-settings 按「当前目录」找 .env，
+# 在上级目录用 --app-dir 启动会读不到 backend/.env（表现为 DB 密码认证失败）。
 cd "$EAI_DIR/backend"
-# 注意：AutoDL 是 conda 环境，conda 的 python 优先级高于 venv，
-# 直接 source activate 会被 conda 抢先（表现为 No module named uvicorn），
-# 因此这里一律使用 venv 解释器的绝对路径。
+# AutoDL 是 conda 环境，conda 的 python 优先级高于 venv，
+# 因此使用 venv 解释器的绝对路径；venv 断链时回退 conda/system python。
 PY="$EAI_DIR/backend/.venv/bin/python"
-# venv 断链时回退到 conda/system python
 [ -x "$PY" ] || PY="$(command -v python3)"
 [ -f "$RUN_DIR/backend.pid" ] && kill "$(cat "$RUN_DIR/backend.pid")" 2>/dev/null || true
 nohup "$PY" -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > "$RUN_DIR/backend.log" 2>&1 &
