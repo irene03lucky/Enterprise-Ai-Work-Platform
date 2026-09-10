@@ -41,7 +41,9 @@ def _msg_out(m) -> RoomChatMessageOut:
     )
 
 
-@router.get("/{room_id}/chat", response_model=list[RoomChatMessageOut])
+# 路径用 /messages：rooms.py 已有 POST /{room_id}/chat（Project Agent 对话），
+# 若同名注册会被其优先匹配，导致 422
+@router.get("/{room_id}/messages", response_model=list[RoomChatMessageOut])
 def list_chat(
     room: Annotated[Room, Depends(_get_room)],
     current_user: Annotated[User, Depends(get_current_user)],
@@ -51,7 +53,7 @@ def list_chat(
     return [_msg_out(m) for m in room_chat_service.list_messages(db, room.id)]
 
 
-@router.post("/{room_id}/chat", response_model=list[RoomChatMessageOut])
+@router.post("/{room_id}/messages", response_model=list[RoomChatMessageOut])
 async def send_chat(
     data: RoomChatMessageCreate,
     room: Annotated[Room, Depends(_get_room)],

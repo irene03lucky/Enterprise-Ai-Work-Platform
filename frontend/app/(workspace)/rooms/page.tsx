@@ -123,7 +123,7 @@ export default function RoomsPage() {
           api<RoomMember[]>(`/companies/${currentCompany.id}/rooms/${roomId}/members`),
           api<RoomDocument[]>(`/companies/${currentCompany.id}/rooms/${roomId}/documents`),
           api<WorkEvent[]>(`/companies/${currentCompany.id}/rooms/${roomId}/events`),
-          api<RoomChatMessage[]>(`/companies/${currentCompany.id}/rooms/${roomId}/chat`),
+          api<RoomChatMessage[]>(`/companies/${currentCompany.id}/rooms/${roomId}/messages`),
           api<Task[]>(`/companies/${currentCompany.id}/rooms/${roomId}/tasks`),
         ]);
         setMembers(m);
@@ -162,7 +162,7 @@ export default function RoomsPage() {
     setChatInput("");
     try {
       const created = await api<RoomChatMessage[]>(
-        `/companies/${currentCompany.id}/rooms/${activeRoom.id}/chat`,
+        `/companies/${currentCompany.id}/rooms/${activeRoom.id}/messages`,
         { method: "POST", body: { content } }
       );
       setChat((prev) => [...prev, ...created]);
