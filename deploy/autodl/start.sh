@@ -21,7 +21,7 @@ if [ "$1" = "stop" ]; then
 fi
 
 echo "==> [1/5] PostgreSQL"
-systemctl start postgresql 2>/dev/null || pg_ctlcluster 16 main start 2>/dev/null || pg_ctlcluster 15 main start 2>/dev/null || true
+service postgresql start 2>/dev/null || systemctl start postgresql 2>/dev/null || pg_ctlcluster 14 main start 2>/dev/null || pg_ctlcluster 15 main start 2>/dev/null || true
 
 echo "==> [2/5] Ollama"
 export OLLAMA_MODELS=/root/autodl-tmp/ollama-models
@@ -31,9 +31,13 @@ sleep 2
 
 echo "==> [3/5] 后端 uvicorn :8000"
 cd "$EAI_DIR/backend"
-source .venv/bin/activate
+# 注意：AutoDL 是 conda 环境，conda 的 python 优先级高于 venv，
+# 直接 source activate 会被 conda 抢先（表现为 No module named uvicorn），
+# 因此这里一律使用 venv 解释器的绝对路径。
+PY="$EAI_DIR/backend/.venv/bin/python"
+[ -x "$PY" ] || PY="$(command -v python3)"
 [ -f "$RUN_DIR/backend.pid" ] && kill "$(cat "$RUN_DIR/backend.pid")" 2>/dev/null || true
-nohup python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > "$RUN_DIR/backend.log" 2>&1 &
+nohup "$PY" -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > "$RUN_DIR/backend.log" 2>&1 &
 echo $! > "$RUN_DIR/backend.pid"
 
 echo "==> [4/5] 前端 Next.js :3000"

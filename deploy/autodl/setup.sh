@@ -51,17 +51,19 @@ ollama pull bge-m3 || echo "!! bge-m3 拉取失败，请手动执行：ollama pu
 echo "==> [4/7] PostgreSQL 初始化（数据落 autodl-tmp）"
 mkdir -p "$DATA_DIR/pg"
 systemctl enable postgresql 2>/dev/null || true
-systemctl start  postgresql 2>/dev/null || (pg_ctlcluster 16 main start 2>/dev/null || pg_ctlcluster 15 main start 2>/dev/null || pg_ctlcluster 14 main start)
-sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='eai'" | grep -q 1 || \
-  sudo -u postgres psql -c "CREATE USER eai WITH PASSWORD '$PG_PASSWORD';"
-sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='eai'" | grep -q 1 || \
-  sudo -u postgres psql -c "CREATE DATABASE eai OWNER eai;"
+systemctl start  postgresql 2>/dev/null || service postgresql start 2>/dev/null || pg_ctlcluster 14 main start 2>/dev/null || pg_ctlcluster 15 main start 2>/dev/null || pg_ctlcluster 16 main start 2>/dev/null
+# AutoDL 容器无 sudo，用 su 切 postgres 用户
+su -s /bin/bash postgres -c "psql -tc \"SELECT 1 FROM pg_roles WHERE rolname='eai'\"" | grep -q 1 || \
+  su -s /bin/bash postgres -c "psql -c \"CREATE USER eai WITH PASSWORD '$PG_PASSWORD';\""
+su -s /bin/bash postgres -c "psql -tc \"SELECT 1 FROM pg_database WHERE datname='eai'\"" | grep -q 1 || \
+  su -s /bin/bash postgres -c "psql -c \"CREATE DATABASE eai OWNER eai;\""
 
 echo "==> [5/7] 后端 Python 环境"
 cd "$EAI_DIR/backend"
+# AutoDL 为 conda 环境：venv 建好后一律用其绝对路径的 python/pip 装依赖，
+# 避免 conda 的 python 抢占 PATH 导致依赖装到错误的解释器上。
 python3 -m venv .venv 2>/dev/null || true
-source .venv/bin/activate
-pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+./.venv/bin/python -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 echo "==> [6/7] 前端构建（先在下方填入 AutoDL 自定义服务公网地址）"
 # AutoDL 控制台 -> 自定义服务 开通后，会得到类似：
