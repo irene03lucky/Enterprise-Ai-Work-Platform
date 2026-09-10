@@ -150,14 +150,18 @@ def _create_sample_document(db: Session, space: KnowledgeSpace, doc: dict) -> No
     db.add(record)
     db.commit()
 
-    # 后台线程完成解析与向量化（模型未就绪时文档会转为 FAILED，可重试）
+    # 在独立线程完成解析与向量化（模型未就绪时文档会转为 FAILED，可重试）。
+    # 注意：必须 join——若用 daemon 线程，种子脚本主线程退出时会把它杀掉，
+    # 文档将永久卡在「向量化中」（手动执行 run_seed 时的典型现象）。
     from app.services import rag_service
 
-    threading.Thread(
+    worker = threading.Thread(
         target=rag_service.process_document,
         args=(document_id,),
-        daemon=True,
-    ).start()
+        daemon=False,
+    )
+    worker.start()
+    worker.join(timeout=180)
 
 
 def _ensure_default_knowledge(db: Session, company: Company) -> None:
