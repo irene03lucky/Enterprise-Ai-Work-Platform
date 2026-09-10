@@ -53,10 +53,12 @@ def stage_label(stage: str | None) -> str:
 
 
 def get_employee(db: Session, company_id: str, user_id: str) -> Employee | None:
+    """取员工并预加载 user/department：流式响应阶段会话可能已关闭，
+    预加载可避免访问 ai_twin_display_name 等属性时触发懒加载报错。"""
     return db.scalar(
-        select(Employee).where(
-            Employee.company_id == company_id, Employee.user_id == user_id
-        )
+        select(Employee)
+        .where(Employee.company_id == company_id, Employee.user_id == user_id)
+        .options(selectinload(Employee.user), selectinload(Employee.department))
     )
 
 

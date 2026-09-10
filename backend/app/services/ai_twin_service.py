@@ -269,7 +269,13 @@ async def stream_workbench_answer(
         if employee and hasattr(employee.status, "value")
         else (employee.status if employee else EmployeeStatus.ONLINE.value)
     )
-    twin_display = employee.ai_twin_display_name if employee else f"{user.name} · AI分身"
+    try:
+        twin_display = (
+            employee.ai_twin_display_name if employee else f"{user.name} · AI分身"
+        )
+    except Exception:  # noqa: BLE001
+        # 会话已关闭导致关系属性不可用时的兜底，避免流式响应直接中断
+        twin_display = f"{user.name} · AI分身"
 
     intent = classify_twin_intent(question)
     yield _sse({"type": "status", "content": "正在理解你的工作上下文…"})

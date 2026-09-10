@@ -14,7 +14,11 @@ class Base(DeclarativeBase):
 
 engine = create_engine(settings.sqlalchemy_database_uri, pool_pre_ping=True)
 
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+# expire_on_commit=False：避免 commit 后 ORM 对象属性过期，
+# 否则流式响应（SSE）在会话关闭后再访问关系属性会抛 DetachedInstanceError。
+SessionLocal = sessionmaker(
+    bind=engine, autoflush=False, autocommit=False, expire_on_commit=False
+)
 
 
 def get_db() -> Generator[Session, None, None]:
