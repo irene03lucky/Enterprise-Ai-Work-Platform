@@ -91,11 +91,16 @@ def delete_document_vectors(company_id: str, document_id: str) -> None:
         logger.warning("清理文档向量失败（可能尚无向量）: %s", document_id, exc_info=True)
 
 
+# 检索结果相关性下限：低于此分的文档视为噪声，不作为来源（避免无关文档被引用）
+MIN_SCORE_DEFAULT = 0.55
+
+
 def search(
     company_id: str,
     query: str,
     k: int = 4,
     document_ids: list[str] | None = None,
+    min_score: float = MIN_SCORE_DEFAULT,
 ) -> list[tuple[str, dict]]:
     """检索企业知识：返回 (chunk 文本, metadata) 列表，附相关度分数。
 
@@ -120,6 +125,10 @@ def search(
     for doc, distance in results:
         meta = dict(doc.metadata or {})
         # Chroma 距离越小越相关，转换为 0~1 的相关度
-        meta["score"] = max(0.0, min(1.0, 1.0 / (1.0 + float(distance))))
+        score = max(0.0, min(1.0, 1.0 / (1.0 + float(distance))))
+        # 低于相关性下限视为噪声（与问句无关），不作为来源
+        if score < min_score:
+            continue
+        meta["score"] = round(score, 3)
         enriched.append((doc.page_content, meta))
     return enriched

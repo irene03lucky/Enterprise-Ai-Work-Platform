@@ -188,7 +188,7 @@ export function WorkbenchChat({
   }, [input, file, streaming, messages, companyId, conversationId, roomId, selectedModel, onActivity]);
 
   return (
-    <section className="card flex min-h-0 flex-col">
+    <section className="card flex h-full min-h-0 flex-col overflow-hidden">
       <div className="border-b border-gray-100 px-5 py-3">
         <div className="flex items-center justify-between gap-2">
           <div className="text-sm font-semibold text-gray-900">AI 助手</div>
