@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.ai.llm import get_chat_model
 from app.models import (
     AIActivityType,
+    Employee,
     EventVisibility,
     Room,
     RoomChatMessage,
@@ -67,9 +68,7 @@ def list_messages(db: Session, room_id: str, limit: int = 100) -> list[RoomChatM
         db.scalars(
             select(RoomChatMessage)
             .where(RoomChatMessage.room_id == room_id)
-            .options(
-                selectinload(RoomChatMessage.employee).selectinload(RoomChatMessage.employee.user)
-            )
+            .options(selectinload(RoomChatMessage.employee).selectinload(Employee.user))
             .order_by(RoomChatMessage.created_at.asc(), RoomChatMessage.id.asc())
         ).all()
     )
@@ -166,7 +165,7 @@ async def send_message(
         db.scalars(
             select(RoomMember)
             .where(RoomMember.room_id == room.id)
-            .options(selectinload(RoomMember.employee).selectinload(RoomMember.employee.user))
+            .options(selectinload(RoomMember.employee).selectinload(Employee.user))
         ).all()
     )
     for m in members:
