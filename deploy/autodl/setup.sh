@@ -60,10 +60,17 @@ su -s /bin/bash postgres -c "psql -tc \"SELECT 1 FROM pg_database WHERE datname=
 
 echo "==> [5/7] 后端 Python 环境"
 cd "$EAI_DIR/backend"
-# AutoDL 为 conda 环境：venv 建好后一律用其绝对路径的 python/pip 装依赖，
-# 避免 conda 的 python 抢占 PATH 导致依赖装到错误的解释器上。
+# AutoDL 为 conda 环境：venv 的 python 常出现「断链符号链接」（ls 看得到但执行报
+# No such file or directory），因此这里检测可用性，不可用则直接装进 conda python。
 python3 -m venv .venv 2>/dev/null || true
-./.venv/bin/python -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+if [ -x .venv/bin/python ]; then
+  PY=./.venv/bin/python
+else
+  echo "   venv 不可用（断链），改用 conda python"
+  PY=python3
+fi
+$PY -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+$PY -c "import uvicorn, fastapi, langchain; print('   依赖自检通过')"
 
 echo "==> [6/7] 前端构建（先在下方填入 AutoDL 自定义服务公网地址）"
 # AutoDL 控制台 -> 自定义服务 开通后，会得到类似：

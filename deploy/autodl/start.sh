@@ -35,6 +35,7 @@ cd "$EAI_DIR/backend"
 # 直接 source activate 会被 conda 抢先（表现为 No module named uvicorn），
 # 因此这里一律使用 venv 解释器的绝对路径。
 PY="$EAI_DIR/backend/.venv/bin/python"
+# venv 断链时回退到 conda/system python
 [ -x "$PY" ] || PY="$(command -v python3)"
 [ -f "$RUN_DIR/backend.pid" ] && kill "$(cat "$RUN_DIR/backend.pid")" 2>/dev/null || true
 nohup "$PY" -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > "$RUN_DIR/backend.log" 2>&1 &
