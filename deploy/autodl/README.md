@@ -6,7 +6,7 @@
 浏览器
   │  https://<xxxx>-6006.se.autodl.com   (AutoDL 自定义服务，唯一公网口)
   ▼
-Caddy :6006
+nginx :6006
   ├── /api/v1/*  →  uvicorn :8000   (FastAPI + LangGraph + Chroma)
   └── 其余        →  Next.js :3000  (Work Center / Rooms / Calendar / Knowledge / Organization)
 

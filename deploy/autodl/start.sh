@@ -14,7 +14,7 @@ RUN_DIR="$EAI_DIR/run"
 mkdir -p "$RUN_DIR"
 
 if [ "$1" = "stop" ]; then
-  for f in caddy backend frontend; do
+  for f in nginx backend frontend; do
     [ -f "$RUN_DIR/$f.pid" ] && kill "$(cat "$RUN_DIR/$f.pid")" 2>/dev/null && rm "$RUN_DIR/$f.pid" && echo "stopped $f"
   done
   exit 0
@@ -42,11 +42,15 @@ cd "$EAI_DIR/frontend"
 nohup npm run start -- -p 3000 > "$RUN_DIR/frontend.log" 2>&1 &
 echo $! > "$RUN_DIR/frontend.pid"
 
-echo "==> [5/5] Caddy 反向代理 :6006（AutoDL 自定义服务口）"
-cp "$EAI_DIR/deploy/autodl/Caddyfile" "$RUN_DIR/Caddyfile"
-[ -f "$RUN_DIR/caddy.pid" ] && kill "$(cat "$RUN_DIR/caddy.pid")" 2>/dev/null || true
-nohup caddy run --config "$RUN_DIR/Caddyfile" > "$RUN_DIR/caddy.log" 2>&1 &
-echo $! > "$RUN_DIR/caddy.pid"
+echo "==> [5/5] nginx 反向代理 :6006（AutoDL 自定义服务口）"
+cp "$EAI_DIR/deploy/autodl/nginx-eai.conf" /etc/nginx/sites-available/eai
+ln -sf /etc/nginx/sites-available/eai /etc/nginx/sites-enabled/eai
+rm -f /etc/nginx/sites-enabled/default
+nginx -t
+(systemctl reload nginx 2>/dev/null || service nginx reload 2>/dev/null || service nginx restart 2>/dev/null) || {
+  nohup nginx -g "daemon off;" > "$RUN_DIR/nginx.log" 2>&1 &
+  echo $! > "$RUN_DIR/nginx.pid"
+}
 
 sleep 4
 echo ""
@@ -54,4 +58,4 @@ echo "✅ 全部服务已启动。健康检查："
 echo "   后端:  curl http://127.0.0.1:8000/api/v1/health"
 echo "   前端:  curl -I http://127.0.0.1:3000"
 echo "   公网:  浏览器打开 AutoDL 自定义服务地址（6006 映射）"
-echo "   日志:  $RUN_DIR/{backend,frontend,caddy}.log"
+echo "   日志:  $RUN_DIR/{backend,frontend,nginx}.log"

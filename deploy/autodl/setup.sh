@@ -18,7 +18,7 @@ source /etc/network_turbo 2>/dev/null || true
 
 echo "==> [2/7] 系统依赖"
 apt-get update -y
-apt-get install -y curl ca-certificates postgresql postgresql-contrib caddy
+apt-get install -y curl ca-certificates postgresql postgresql-contrib nginx
 # Node 20（Next.js 14 需要 >= 18.17）
 if ! command -v node >/dev/null || [ "$(node -v | cut -dv -f2 | cut -d. -f1)" -lt 18 ]; then
   curl -fsSL https://deb.nodesource.com/setup_20.x | bash -

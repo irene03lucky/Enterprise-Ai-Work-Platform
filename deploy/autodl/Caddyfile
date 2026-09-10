@@ -1,7 +1,0 @@
-# EAI AutoDL 单公网口反向代理（Caddy）
-# AutoDL 自定义服务固定映射 6006 端口对外
-:6006 {
-	# SSE 流式对话要求关闭缓冲；后端已带 X-Accel-Buffering: no
-	reverse_proxy /api/v1/* 127.0.0.1:8000
-	reverse_proxy 127.0.0.1:3000
-}
