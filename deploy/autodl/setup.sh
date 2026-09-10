@@ -49,6 +49,12 @@ ollama pull qwen2.5:7b || echo "!! 模型拉取失败，可稍后手动 ollama p
 ollama pull bge-m3 || echo "!! bge-m3 拉取失败，请手动执行：ollama pull bge-m3"
 
 echo "==> [4/7] PostgreSQL 初始化（数据落 autodl-tmp）"
+# 关键：若 .env 已存在（脚本重跑），必须复用其中的密码建库，
+# 否则新建的随机密码写不进 .env，会导致「password authentication failed」。
+if [ -f "$EAI_DIR/backend/.env" ]; then
+  EXISTING_PW="$(grep '^POSTGRES_PASSWORD=' "$EAI_DIR/backend/.env" | cut -d= -f2-)"
+  [ -n "$EXISTING_PW" ] && PG_PASSWORD="$EXISTING_PW"
+fi
 mkdir -p "$DATA_DIR/pg"
 systemctl enable postgresql 2>/dev/null || true
 systemctl start  postgresql 2>/dev/null || service postgresql start 2>/dev/null || pg_ctlcluster 14 main start 2>/dev/null || pg_ctlcluster 15 main start 2>/dev/null || pg_ctlcluster 16 main start 2>/dev/null
