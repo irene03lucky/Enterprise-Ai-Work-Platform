@@ -84,7 +84,9 @@ echo "==> [6/7] 前端构建（先在下方填入 AutoDL 自定义服务公网�
 # 把它填到 export PUBLIC_BASE_URL=... 再重跑本脚本，或手动执行本步。
 if [ -n "$PUBLIC_BASE_URL" ]; then
   cd "$EAI_DIR/frontend"
-  export NEXT_PUBLIC_API_URL="${PUBLIC_BASE_URL%/}/api"
+  # 注意：前端 getApiBase() 会自己追加 /api/v1，这里只传源地址（不带 /api），
+  # 否则会出现 /api/api/v1 双重前缀导致所有请求 404。
+  export NEXT_PUBLIC_API_URL="${PUBLIC_BASE_URL%/}"
   npm install --registry=https://registry.npmmirror.com
   npm run build
 else

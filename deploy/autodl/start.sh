@@ -37,13 +37,17 @@ cd "$EAI_DIR/backend"
 # 因此使用 venv 解释器的绝对路径；venv 断链时回退 conda/system python。
 PY="$EAI_DIR/backend/.venv/bin/python"
 [ -x "$PY" ] || PY="$(command -v python3)"
-[ -f "$RUN_DIR/backend.pid" ] && kill "$(cat "$RUN_DIR/backend.pid")" 2>/dev/null || true
+pkill -f "uvicorn app.main:app" 2>/dev/null || true
+sleep 1
 nohup "$PY" -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > "$RUN_DIR/backend.log" 2>&1 &
 echo $! > "$RUN_DIR/backend.pid"
 
 echo "==> [4/5] 前端 Next.js :3000"
 cd "$EAI_DIR/frontend"
-[ -f "$RUN_DIR/frontend.pid" ] && kill "$(cat "$RUN_DIR/frontend.pid")" 2>/dev/null || true
+# 先按进程名清理旧实例，避免 EADDRINUSE（PID 文件可能已过期）
+pkill -f "next start" 2>/dev/null || true
+pkill -f "next-server" 2>/dev/null || true
+sleep 1
 nohup npm run start -- -p 3000 > "$RUN_DIR/frontend.log" 2>&1 &
 echo $! > "$RUN_DIR/frontend.pid"
 
