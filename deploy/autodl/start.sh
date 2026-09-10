@@ -24,7 +24,9 @@ echo "==> [1/5] PostgreSQL"
 systemctl start postgresql 2>/dev/null || pg_ctlcluster 16 main start 2>/dev/null || pg_ctlcluster 15 main start 2>/dev/null || true
 
 echo "==> [2/5] Ollama"
-systemctl start ollama 2>/dev/null || { pgrep -f "ollama serve" >/dev/null || nohup ollama serve >/root/autodl-tmp/ollama.log 2>&1 & }
+export OLLAMA_MODELS=/root/autodl-tmp/ollama-models
+mkdir -p "$OLLAMA_MODELS"
+systemctl start ollama 2>/dev/null || { pgrep -f "ollama serve" >/dev/null || OLLAMA_MODELS=$OLLAMA_MODELS nohup ollama serve >/root/autodl-tmp/ollama.log 2>&1 & }
 sleep 2
 
 echo "==> [3/5] 后端 uvicorn :8000"

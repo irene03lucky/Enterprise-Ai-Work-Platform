@@ -25,12 +25,23 @@ if ! command -v node >/dev/null || [ "$(node -v | cut -dv -f2 | cut -d. -f1)" -l
   apt-get install -y nodejs
 fi
 
-echo "==> [3/7] Ollama + 模型（GPU 推理）"
+echo "==> [3/7] Ollama + 模型（GPU 推理，模型目录固定到持久盘）"
 if ! command -v ollama >/dev/null; then
   curl -fsSL https://ollama.com/install.sh | sh
 fi
+# 模型放 /root/autodl-tmp（持久盘），避免撑爆系统盘 + 重启丢失
+mkdir -p /root/autodl-tmp/ollama-models
+if [ -d /etc/systemd/system ]; then
+  mkdir -p /etc/systemd/system/ollama.service.d
+  cat > /etc/systemd/system/ollama.service.d/override.conf <<'EOF'
+[Service]
+Environment="OLLAMA_MODELS=/root/autodl-tmp/ollama-models"
+EOF
+  systemctl daemon-reload 2>/dev/null || true
+fi
+export OLLAMA_MODELS=/root/autodl-tmp/ollama-models
 systemctl enable ollama 2>/dev/null || true
-systemctl start  ollama 2>/dev/null || (nohup ollama serve >/root/autodl-tmp/ollama.log 2>&1 &)
+systemctl restart ollama 2>/dev/null || (nohup ollama serve >/root/autodl-tmp/ollama.log 2>&1 &)
 sleep 3
 # 默认模型（可按需增删；后端模型注册表会自动发现全部已安装模型）
 ollama pull qwen2.5:7b || echo "!! 模型拉取失败，可稍后手动 ollama pull"
