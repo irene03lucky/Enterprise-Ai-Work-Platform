@@ -43,8 +43,10 @@ export OLLAMA_MODELS=/root/autodl-tmp/ollama-models
 systemctl enable ollama 2>/dev/null || true
 systemctl restart ollama 2>/dev/null || (nohup ollama serve >/root/autodl-tmp/ollama.log 2>&1 &)
 sleep 3
-# 默认模型（可按需增删；后端模型注册表会自动发现全部已安装模型）
+# 默认对话模型（可按需增删；后端模型注册表会自动发现全部已安装模型）
 ollama pull qwen2.5:7b || echo "!! 模型拉取失败，可稍后手动 ollama pull"
+# 向量模型（Knowledge RAG 必需：文档解析后用它向量化入库）
+ollama pull bge-m3 || echo "!! bge-m3 拉取失败，请手动执行：ollama pull bge-m3"
 
 echo "==> [4/7] PostgreSQL 初始化（数据落 autodl-tmp）"
 mkdir -p "$DATA_DIR/pg"
