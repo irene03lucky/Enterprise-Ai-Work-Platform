@@ -51,12 +51,16 @@ EOF
 fi
 export OLLAMA_MODELS=/root/autodl-tmp/ollama-models
 systemctl enable ollama 2>/dev/null || true
-systemctl restart ollama 2>/dev/null || (nohup ollama serve >/root/autodl-tmp/ollama.log 2>&1 &)
+# 已在运行则不重复拉起（否则会打印端口占用错误）
+systemctl restart ollama 2>/dev/null || { pgrep -f "ollama serve" >/dev/null || nohup ollama serve >/root/autodl-tmp/ollama.log 2>&1 & }
 sleep 3
 # 默认对话模型（可按需增删；后端模型注册表会自动发现全部已安装模型）
-ollama pull qwen2.5:7b || echo "!! 模型拉取失败，可稍后手动 ollama pull"
+# 已存在则跳过：重跑脚本时避免再次走外网下载（内网模型可离线导入）
+ollama list 2>/dev/null | grep -q '^qwen2.5:7b' || \
+  ollama pull qwen2.5:7b || echo "!! 模型拉取失败，可稍后手动 ollama pull"
 # 向量模型（Knowledge RAG 必需：文档解析后用它向量化入库）
-ollama pull bge-m3 || echo "!! bge-m3 拉取失败，请手动执行：ollama pull bge-m3"
+ollama list 2>/dev/null | grep -q '^bge-m3' || \
+  ollama pull bge-m3 || echo "!! bge-m3 拉取失败，可用 ModelScope 的 GGUF 离线导入（见 README）"
 
 echo "==> [4/7] PostgreSQL 初始化"
 # 关键：若 .env 已存在（脚本重跑），必须复用其中的密码建库，
@@ -91,21 +95,22 @@ fi
 $PY -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 $PY -c "import uvicorn, fastapi, langchain; print('   依赖自检通过')"
 
-echo "==> [6/7] 前端构建（先在下方填入 AutoDL 自定义服务公网地址）"
-# AutoDL 控制台 -> 自定义服务 开通后，会得到类似：
-#   https://xxxxx-6006.se.autodl.com
-# 把它填到 export PUBLIC_BASE_URL=... 再重跑本脚本，或手动执行本步。
+echo "==> [6/7] 前端构建"
+cd "$EAI_DIR/frontend"
+npm install --registry=https://registry.npmmirror.com
+# 前端 getApiBase() 会自己追加 /api/v1：
+#  - 默认用「同源相对地址」/api/v1：请求发往当前页面所在域名，经 nginx :6006 代理到后端，
+#    因此公网地址 / SSH 隧道 / 反向代理下都自动可用，换访问方式无需重新构建；
+#  - 显式给了 PUBLIC_BASE_URL 时则烘焙绝对地址（注意不带 /api 后缀，否则会
+#    变成 /api/api/v1 双重前缀导致全部请求 404）。
 if [ -n "$PUBLIC_BASE_URL" ]; then
-  cd "$EAI_DIR/frontend"
-  # 注意：前端 getApiBase() 会自己追加 /api/v1，这里只传源地址（不带 /api），
-  # 否则会出现 /api/api/v1 双重前缀导致所有请求 404。
   export NEXT_PUBLIC_API_URL="${PUBLIC_BASE_URL%/}"
-  npm install --registry=https://registry.npmmirror.com
-  npm run build
+  echo "   使用绝对地址: $NEXT_PUBLIC_API_URL"
 else
-  echo "!! 跳过前端构建：未设置 PUBLIC_BASE_URL（AutoDL 自定义服务地址）"
-  echo "   设置后执行：PUBLIC_BASE_URL=https://xxxxx-6006.se.autodl.com bash deploy/autodl/setup.sh"
+  export NEXT_PUBLIC_API_URL=""
+  echo "   使用同源相对地址 /api/v1（推荐：公网地址与 SSH 隧道通用）"
 fi
+npm run build
 
 echo "==> [7/7] 生成后端 .env（生产凭据）"
 if [ ! -f "$EAI_DIR/backend/.env" ]; then
@@ -142,6 +147,7 @@ fi
 
 echo ""
 echo "✅ 环境安装完成。下一步："
-echo "   1) 修改 $EAI_DIR/backend/.env 中的密码/密钥"
-echo "   2) PUBLIC_BASE_URL=... bash deploy/autodl/setup.sh  （补前端构建）"
-echo "   3) bash deploy/autodl/start.sh 启动全部服务"
+echo "   1) bash $EAI_DIR/deploy/autodl/start.sh   启动全部服务"
+echo "   2) 首次部署播种演示数据："
+echo "      cd $EAI_DIR/backend && python3 -c \"from app.seed import run_seed; run_seed()\""
+echo "   3) 查看凭据：cat $EAI_DIR/backend/.env"
