@@ -7,6 +7,7 @@
 import logging
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from sqlalchemy import select
 
 from app.ai.vectorstore import get_company_vectorstore
 from app.core.database import SessionLocal
@@ -75,6 +76,38 @@ def process_document(document_id: str) -> None:
             doc.status = DocumentStatus.FAILED
             doc.error_message = str(exc)[:500]
             db.commit()
+    finally:
+        db.close()
+
+
+def reset_stale_documents() -> int:
+    """启动自愈：把卡在「解析中 / 向量化中」的文档标记为失败。
+
+    后台任务是进程内的：服务重启（部署、崩溃、pkill）会把它打断，
+    状态就永久停在 PARSING/EMBEDDING，前端只会一直显示「向量化中」。
+    启动时统一收敛为 FAILED，前端即可显示「重试」按钮重新跑一遍。
+    """
+    db = SessionLocal()
+    try:
+        docs = list(
+            db.scalars(
+                select(KnowledgeDocument).where(
+                    KnowledgeDocument.status.in_(
+                        [DocumentStatus.PARSING, DocumentStatus.EMBEDDING]
+                    )
+                )
+            )
+        )
+        for doc in docs:
+            doc.status = DocumentStatus.FAILED
+            doc.error_message = "上一次解析 / 向量化被服务重启中断，请点击重试"
+        if docs:
+            db.commit()
+            logger.warning("启动自愈：%d 个中断文档已标记为失败（可重试）", len(docs))
+        return len(docs)
+    except Exception:  # noqa: BLE001
+        logger.exception("启动自愈失败（不影响服务启动）")
+        return 0
     finally:
         db.close()
 

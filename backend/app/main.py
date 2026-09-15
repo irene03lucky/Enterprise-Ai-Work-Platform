@@ -38,6 +38,11 @@ def on_startup() -> None:
 
     Base.metadata.create_all(bind=engine)
 
+    # 启动自愈：收敛上次被中断的文档状态（否则会永久停在「向量化中」）
+    from app.services import rag_service
+
+    rag_service.reset_stale_documents()
+
     if settings.SEED_ON_STARTUP:
         from app.seed import run_seed
 
