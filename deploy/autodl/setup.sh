@@ -13,6 +13,16 @@ DATA_DIR="/root/autodl-tmp/eai-data"
 SECRET_KEY="$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 PG_PASSWORD="$(openssl rand -hex 16 2>/dev/null || head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 
+# ---------- 缓存/临时目录重定向到持久盘 ----------
+# AutoDL 系统盘只有 30GB：pip / npm 缓存与临时文件默认写在系统盘，
+# 装依赖（pip 约 2GB + npm 缓存数 GB）时极易把系统盘撑爆导致脚本中途失败。
+PERSIST="/root/autodl-tmp"
+export PIP_CACHE_DIR="$PERSIST/caches/pip"
+export NPM_CONFIG_CACHE="$PERSIST/caches/npm"
+export TMPDIR="$PERSIST/tmp"
+export OLLAMA_MODELS="$PERSIST/ollama-models"
+mkdir -p "$PIP_CACHE_DIR" "$NPM_CONFIG_CACHE" "$TMPDIR" "$OLLAMA_MODELS"
+
 echo "==> [1/7] AutoDL 学术加速（下载用，失败可忽略）"
 source /etc/network_turbo 2>/dev/null || true
 
@@ -48,13 +58,16 @@ ollama pull qwen2.5:7b || echo "!! 模型拉取失败，可稍后手动 ollama p
 # 向量模型（Knowledge RAG 必需：文档解析后用它向量化入库）
 ollama pull bge-m3 || echo "!! bge-m3 拉取失败，请手动执行：ollama pull bge-m3"
 
-echo "==> [4/7] PostgreSQL 初始化（数据落 autodl-tmp）"
+echo "==> [4/7] PostgreSQL 初始化"
 # 关键：若 .env 已存在（脚本重跑），必须复用其中的密码建库，
 # 否则新建的随机密码写不进 .env，会导致「password authentication failed」。
 if [ -f "$EAI_DIR/backend/.env" ]; then
   EXISTING_PW="$(grep '^POSTGRES_PASSWORD=' "$EAI_DIR/backend/.env" | cut -d= -f2-)"
   [ -n "$EXISTING_PW" ] && PG_PASSWORD="$EXISTING_PW"
 fi
+# 说明：PostgreSQL 集群数据目录仍在系统盘（/var/lib/postgresql）。
+# 业务库体积很小（MB 级），暂不迁移以降低部署风险；
+# 若后续数据量显著增长，再把该目录迁到 $DATA_DIR/pg 并在 postgresql.conf 改 data_directory。
 mkdir -p "$DATA_DIR/pg"
 systemctl enable postgresql 2>/dev/null || true
 systemctl start  postgresql 2>/dev/null || service postgresql start 2>/dev/null || pg_ctlcluster 14 main start 2>/dev/null || pg_ctlcluster 15 main start 2>/dev/null || pg_ctlcluster 16 main start 2>/dev/null

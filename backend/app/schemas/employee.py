@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.models.employee import (
     DEFAULT_DELEGATION_PERMISSIONS,
@@ -42,6 +42,27 @@ class EmployeeOut(BaseModel):
     user_avatar: str | None = None
 
     model_config = {"from_attributes": True}
+
+    # ---------- 存量数据容错 ----------
+    # 历史行可能因「列后加 / 非 ORM 写入」导致 ai_permissions 为 NULL、状态为空，
+    # 直接序列化会触发 ResponseValidationError 使整个列表接口 500，这里统一兜底。
+    @field_validator("ai_permissions", mode="before")
+    @classmethod
+    def _normalize_permissions(cls, value: object) -> dict[str, bool]:
+        merged = dict(DEFAULT_DELEGATION_PERMISSIONS)
+        if isinstance(value, dict):
+            merged.update({k: bool(v) for k, v in value.items()})
+        return merged
+
+    @field_validator("ai_twin_status", mode="before")
+    @classmethod
+    def _normalize_twin_status(cls, value: object) -> object:
+        return value if value else AITwinStatus.ASSIST
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _normalize_status(cls, value: object) -> object:
+        return value if value else EmployeeStatus.ONLINE
 
 
 class EmployeeUserCreate(BaseModel):
