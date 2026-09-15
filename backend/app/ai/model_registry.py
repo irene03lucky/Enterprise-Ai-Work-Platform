@@ -76,7 +76,15 @@ def list_models() -> list[dict[str, Any]]:
             # 配置的默认模型未在 /api/tags 中（异常情况），兜底列出
             models.append(_entry(default_name, "ollama", current=True))
     else:
-        models.append(_entry(default_name, "openai-compatible", current=True))
+        # 云端 OpenAI 兼容端点：配置的默认模型 + 可选额外模型（逗号分隔），
+        # 供前端「当前模型」下拉切换（RAG 知识库与所选模型无关）。
+        names = [default_name]
+        for extra in settings.LLM_EXTRA_MODELS.split(","):
+            extra = extra.strip()
+            if extra and extra not in names:
+                names.append(extra)
+        for name in names:
+            models.append(_entry(name, "openai-compatible", current=(name == default_name)))
 
     return models
 

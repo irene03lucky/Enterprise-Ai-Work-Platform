@@ -37,6 +37,8 @@ services:
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-m3}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_EXTRA_MODELS: ${LLM_EXTRA_MODELS:-}
+      AGENT_MODE: ${AGENT_MODE:-auto}
       CHROMA_DIR: /app/data/chroma
       UPLOAD_DIR: /app/data/uploads
     ports:

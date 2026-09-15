@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # openai-compatible 模式下的端点与密钥
     LLM_BASE_URL: str = ""
     LLM_API_KEY: str = ""
+    # 云端模式下额外可选模型（逗号分隔），用于前端「当前模型」下拉切换；
+    # 例如：deepseek-chat,deepseek-reasoner
+    LLM_EXTRA_MODELS: str = ""
 
     # 数据目录（容器内挂载卷）
     CHROMA_DIR: str = "data/chroma"
