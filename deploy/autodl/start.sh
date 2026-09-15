@@ -56,10 +56,19 @@ cp "$EAI_DIR/deploy/autodl/nginx-eai.conf" /etc/nginx/sites-available/eai
 ln -sf /etc/nginx/sites-available/eai /etc/nginx/sites-enabled/eai
 rm -f /etc/nginx/sites-enabled/default
 nginx -t
-(systemctl reload nginx 2>/dev/null || service nginx reload 2>/dev/null || service nginx restart 2>/dev/null) || {
+# 注意：容器内 systemctl / service 常「假成功」（返回 0 却并没起进程），
+# 例如对未运行的 nginx 执行 reload。因此不看返回值，直接校验 6006 是否真的在监听。
+systemctl restart nginx 2>/dev/null || service nginx start 2>/dev/null || true
+sleep 1
+if ! ss -tlnp 2>/dev/null | grep -q ':6006'; then
+  nginx -s stop 2>/dev/null || true
   nohup nginx -g "daemon off;" > "$RUN_DIR/nginx.log" 2>&1 &
   echo $! > "$RUN_DIR/nginx.pid"
-}
+  sleep 2
+fi
+ss -tlnp 2>/dev/null | grep -q ':6006' \
+  && echo "   nginx 已监听 :6006" \
+  || echo "!! nginx 未监听 :6006，请查看 $RUN_DIR/nginx.log"
 
 sleep 4
 echo ""
