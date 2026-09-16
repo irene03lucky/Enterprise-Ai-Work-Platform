@@ -125,7 +125,9 @@ def delete_document_vectors(company_id: str, document_id: str) -> None:
 
 
 # 检索结果相关性下限：低于此分的文档视为噪声，不作为来源（避免无关文档被引用）
-MIN_SCORE_DEFAULT = 0.55
+# 实测标定（bge-m3 + 本仓文档）：相关文档落在 0.54~0.71，无关文档 0.42~0.46。
+# 阈值取 0.5 可干净分开两者；取 0.55 会误杀「员工报销制度是什么」这类短问句（0.542）。
+MIN_SCORE_DEFAULT = 0.5
 
 
 def search(

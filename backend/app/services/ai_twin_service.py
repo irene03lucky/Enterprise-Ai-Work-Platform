@@ -187,12 +187,14 @@ async def _stream_answer(
         elif m.get("role") == "assistant":
             messages.append(AIMessage(content=m["content"]))
 
-    retrieved = False
+    # 构造本次提问的人消息：把「检索资料」与「问题」放进**同一条** HumanMessage。
+    # 注意：不能把"资料包"和"裸问题"拆成两条消息——最后一条若是裸问题，
+    # 小模型（如 qwen2.5:3b）会忽略前一条里的资料，转而用通用知识作答。
+    knowledge_block = ""
     if use_knowledge:
         try:
             results = rag_service.search(company_id, question, k=4)
             if results:
-                retrieved = True
                 context = "\n\n".join(
                     f"【{meta.get('source', '未知文档')}】\n{text}" for text, meta in results
                 )
@@ -204,28 +206,18 @@ async def _stream_answer(
                             "score": round(meta.get("score", 0.0), 3),
                         }
                     )
-                messages.append(
-                    HumanMessage(
-                        content=f"【企业知识库资料】\n{context}\n\n【问题】\n{question}"
-                    )
+                knowledge_block = f"【企业知识库资料】\n{context}\n\n"
+            else:
+                # 检索不到时不许虚构（T04.8）
+                knowledge_block = (
+                    "【企业知识库检索结果】未检索到相关资料。\n"
+                    "若用户的问题需要企业内部信息，请明确回复：当前企业知识库中未检索到足够信息，"
+                    "并建议在 Knowledge 模块上传相关文档；若是与知识库无关的通用问题，直接回答。\n\n"
                 )
         except Exception:  # noqa: BLE001
             logger.warning("工作台知识检索失败，忽略", exc_info=True)
 
-        if not retrieved:
-            # 检索不到时不许虚构（T04.8）
-            messages.append(
-                HumanMessage(
-                    content=(
-                        "【企业知识库检索结果】未检索到相关资料。\n"
-                        "若用户的问题需要企业内部信息，请明确回复：当前企业知识库中未检索到足够信息，"
-                        "并建议在 Knowledge 模块上传相关文档；若是与知识库无关的通用问题，直接回答。"
-                    )
-                )
-            )
-
-    if not any(isinstance(m, HumanMessage) and m.content == question for m in messages):
-        messages.append(HumanMessage(content=question))
+    messages.append(HumanMessage(content=f"{knowledge_block}【问题】\n{question}"))
 
     async for chunk in model.astream(messages):
         content = chunk.content
@@ -341,8 +333,10 @@ async def stream_workbench_answer(
             history,
             question,
             sources_bag,
-            use_knowledge=permissions.get("provide_project_docs", True)
-            or permissions.get("answer_project_info", True),
+            # AI 助手是「用户主动使用」的能力，检索企业知识库不应受 AI 分身
+            # 对外代理权限门控（T04.6 已明确「AI 助手 ≠ AI 分身」）。
+            # 那些权限只在「AI 分身代表本人在外部沟通中回应」时才生效。
+            use_knowledge=True,
             model_id=model_id,
         ):
             yield evt
