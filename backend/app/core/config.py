@@ -48,6 +48,17 @@ class Settings(BaseSettings):
     # Agent 编排：小模型 tool-calling 不可靠时走「先检索后生成」RAG 链
     AGENT_MODE: str = "auto"  # auto | always | never
 
+    # ---------- 时区 ----------
+    # 主时区：用于「今日日程」等按天计算，以及默认展示
+    APP_TIMEZONE: str = "Asia/Shanghai"
+    # 需要向模型展示当前时间的时区列表（IANA 名称，逗号分隔）。
+    # 跨境电商 / 多市场团队把业务所在时区都列上，模型即可直接回答
+    # 「洛杉矶现在几点」这类问题，不需要用户自己换算。
+    APP_TIMEZONES: str = (
+        "Asia/Shanghai,America/Los_Angeles,America/New_York,"
+        "Europe/London,Asia/Tokyo,Asia/Singapore,UTC"
+    )
+
     @property
     def sqlalchemy_database_uri(self) -> str:
         return (
@@ -58,6 +69,15 @@ class Settings(BaseSettings):
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
+
+    @property
+    def app_timezone_list(self) -> list[str]:
+        """需要向模型展示的时区列表（主时区置顶、去重）。"""
+        names = [z.strip() for z in self.APP_TIMEZONES.split(",") if z.strip()]
+        primary = self.APP_TIMEZONE.strip()
+        if primary and primary not in names:
+            names.insert(0, primary)
+        return names
 
 
 @lru_cache

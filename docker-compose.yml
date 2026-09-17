@@ -29,6 +29,9 @@ services:
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
       # 时区：容器默认 UTC 会让「今日日程 / 当前时间」等按天计算错位
       TZ: ${TZ:-Asia/Shanghai}
+      APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Shanghai}
+      # 展示给模型的时区清单（跨境电商可在此列全业务时区）
+      APP_TIMEZONES: "${APP_TIMEZONES:-Asia/Shanghai,America/Los_Angeles,America/New_York,Europe/London,Asia/Tokyo,Asia/Singapore,UTC}"
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-1440}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
       SEED_ON_STARTUP: "true"

@@ -11,6 +11,7 @@ import logging
 import re
 from collections.abc import AsyncGenerator
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
@@ -86,19 +87,69 @@ def _sse(event: dict) -> str:
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
-def now_line() -> str:
-    """当前时间锚点（必须显式注入提示词）。
+# 常见时区中文名（未收录的时区直接显示 IANA 名称）
+_TZ_LABELS = {
+    "Asia/Shanghai": "北京时间",
+    "Asia/Hong_Kong": "香港时间",
+    "Asia/Taipei": "台北时间",
+    "Asia/Tokyo": "日本时间",
+    "Asia/Seoul": "韩国时间",
+    "Asia/Singapore": "新加坡时间",
+    "Asia/Bangkok": "曼谷时间",
+    "Asia/Dubai": "迪拜时间",
+    "Asia/Kolkata": "印度时间",
+    "Europe/London": "伦敦时间",
+    "Europe/Paris": "巴黎时间",
+    "Europe/Berlin": "柏林时间",
+    "Europe/Moscow": "莫斯科时间",
+    "America/Los_Angeles": "洛杉矶 / 旧金山时间（美西）",
+    "America/Denver": "丹佛时间（美西山区）",
+    "America/Chicago": "芝加哥时间（美中）",
+    "America/New_York": "纽约时间（美东）",
+    "America/Sao_Paulo": "圣保罗时间（巴西）",
+    "Australia/Sydney": "悉尼时间",
+    "UTC": "UTC 协调世界时",
+}
 
-    LLM 自身没有时间概念，训练数据里也没有"今天"。若提示词不给出当前时间，
-    被问「今天是几号」时只能编造一个训练期内的日期，且被质疑后仍会坚持。
-    各对话链路（AI 助手 / Knowledge Agent / Project Agent / Room）统一注入本行。
+
+def now_line() -> str:
+    """当前时间锚点（多时区，必须显式注入提示词）。
+
+    LLM 自身没有时间概念，训练数据里也没有"今天"：
+    - 不注入时间 → 被问「今天是几号」会编造训练期内的日期，且被质疑后仍坚持；
+    - 只注入单一时区 → 被问「洛杉矶现在几点」只能让用户自行换算。
+
+    因此一次性给出常用时区的当前时间。时区清单由 APP_TIMEZONES 配置，
+    跨境电商 / 多市场团队把业务所在时区都列上即可。
     """
-    now = datetime.now().astimezone()
-    weekday = "一二三四五六日"[now.weekday()]
-    return (
-        f"【当前时间】{now.strftime('%Y-%m-%d')} 星期{weekday} {now.strftime('%H:%M')}"
-        "（回答任何与日期/时间有关的问题时以此为准，不要自行推测）"
+    lines = [
+        "【当前时间】以下是各时区此刻的时间，回答任何日期/时间相关问题都必须以此为准："
+    ]
+    for name in settings.app_timezone_list:
+        try:
+            tz = ZoneInfo(name)
+        except Exception:  # noqa: BLE001 - 无 tzdata 或名称非法时跳过该时区
+            continue
+        now = datetime.now(tz)
+        weekday = "一二三四五六日"[now.weekday()]
+        offset = now.strftime("%z")
+        label = _TZ_LABELS.get(name, name)
+        lines.append(
+            f"- {label}（{name}，UTC{offset[:3]}:{offset[3:]}）："
+            f"{now.strftime('%Y-%m-%d')} 星期{weekday} {now.strftime('%H:%M')}"
+        )
+    if len(lines) == 1:
+        # 兜底：拿不到任何时区数据时退回系统本地时区
+        now = datetime.now().astimezone()
+        weekday = "一二三四五六日"[now.weekday()]
+        lines.append(
+            f"- 本地时间：{now.strftime('%Y-%m-%d')} 星期{weekday} {now.strftime('%H:%M')}"
+        )
+    lines.append(
+        "表中未列出的城市，按其 UTC 偏移换算即可，并在回答中说明是按偏移推算；"
+        "不要要求用户自行查询或换算。"
     )
+    return "\n".join(lines)
 
 
 def _make_knowledge_search_tool(company_id: str, sources_bag: list[dict]):
