@@ -93,8 +93,10 @@ export default function RoomsPage() {
   const [chatInput, setChatInput] = useState("");
   const [chatSending, setChatSending] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
+  const [chatClearing, setChatClearing] = useState(false);
   const [roomTasks, setRoomTasks] = useState<Task[]>([]);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const chatInputRef = useRef<HTMLInputElement>(null);
 
   // 侧边栏「项目」点击 ?room= 进入；?new=1 打开新建
   useEffect(() => {
@@ -557,14 +559,48 @@ export default function RoomsPage() {
                 Work Event · Timeline（{events.length}）
               </button>
             </div>
-            {tab === "timeline" && isMember && (
-              <button
-                className="btn-secondary px-2.5 py-1 text-xs"
-                onClick={() => setEventFormOpen(true)}
-              >
-                + 记录事件
-              </button>
-            )}
+            <div className="flex items-center gap-3">
+              {tab === "chat" && isMember && (
+                <button
+                  className="text-xs text-gray-400 transition hover:text-red-500 disabled:opacity-40"
+                  disabled={chat.length === 0 || chatClearing}
+                  onClick={async () => {
+                    if (!activeRoom) return;
+                    if (
+                      !window.confirm(
+                        `确定清空「${activeRoom.name}」的项目聊天记录？该操作不可恢复。`
+                      )
+                    )
+                      return;
+                    setChatClearing(true);
+                    setChatError(null);
+                    try {
+                      await api(
+                        `/companies/${currentCompany.id}/rooms/${activeRoom.id}/messages`,
+                        { method: "DELETE" }
+                      );
+                      setChat([]);
+                    } catch (err) {
+                      setChatError(
+                        err instanceof Error ? `清屏失败：${err.message}` : "清屏失败，请重试"
+                      );
+                    } finally {
+                      setChatClearing(false);
+                    }
+                  }}
+                >
+                  {chatClearing ? "清屏中…" : "清屏"}
+                </button>
+              )}
+              {tab === "timeline" && isMember && (
+                <button
+                  className="btn-secondary px-2.5 py-1 text-xs"
+                  onClick={() => setEventFormOpen(true)}
+                >
+                  + 记录事件
+                </button>
+              )}
+            </div>
           </div>
           {tab === "chat" ? (
             <>
@@ -574,9 +610,17 @@ export default function RoomsPage() {
                   <span className="text-[11px] text-gray-300">暂无成员</span>
                 ) : (
                   members.map((m) => (
-                    <span
+                    <button
                       key={m.id}
-                      className="flex items-center gap-1 rounded-full bg-gray-50 px-2 py-0.5 text-[11px]"
+                      type="button"
+                      title={`点击 @${m.user_name ?? "成员"}（被点名且分身开启代理时会接管回复）`}
+                      onClick={() => {
+                        const name = m.user_name;
+                        if (!name) return;
+                        setChatInput((prev) => `${prev && !prev.endsWith(" ") ? `${prev} ` : prev}@${name} `);
+                        chatInputRef.current?.focus();
+                      }}
+                      className="flex items-center gap-1 rounded-full bg-gray-50 px-2 py-0.5 text-[11px] transition hover:bg-gray-100"
                     >
                       <span
                         className={`h-1.5 w-1.5 shrink-0 rounded-full ${
@@ -592,9 +636,10 @@ export default function RoomsPage() {
                           AI 代理
                         </span>
                       )}
-                    </span>
+                    </button>
                   ))
                 )}
+                <span className="text-[10px] text-gray-300">点击成员标签可 @ 他</span>
               </div>
               <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto pr-1">
                 {chat.length === 0 && (
@@ -655,6 +700,7 @@ export default function RoomsPage() {
               {isMember && (
                 <div className="mt-2 flex gap-2">
                   <input
+                    ref={chatInputRef}
                     className="input flex-1"
                     value={chatInput}
                     onChange={(e) => setChatInput(e.target.value)}

@@ -6,9 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_company_with_access, get_current_user
+from app.api.deps import get_company_with_access, get_current_user, is_company_admin
 from app.core.database import get_db
-from app.models import Company, Employee, User
+from app.models import Company, Employee, RoomMember, User
 from app.schemas.room import RoomChatMessageCreate, RoomChatMessageOut
 from app.services import room_chat_service
 from app.models import Room
@@ -69,3 +69,32 @@ async def send_chat(
     )
     created = await room_chat_service.send_message(db, room, employee, data.content)
     return [_msg_out(m) for m in created]
+
+
+@router.delete("/{room_id}/messages", status_code=status.HTTP_204_NO_CONTENT)
+def clear_chat(
+    room: Annotated[Room, Depends(_get_room)],
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    """清空项目聊天记录（「清屏」）。仅项目成员或企业管理员可执行。"""
+    employee = db.scalar(
+        select(Employee).where(
+            Employee.company_id == room.company_id, Employee.user_id == current_user.id
+        )
+    )
+    is_member = employee is not None and (
+        db.scalar(
+            select(RoomMember.id).where(
+                RoomMember.room_id == room.id, RoomMember.employee_id == employee.id
+            )
+        )
+        is not None
+    )
+    company = db.get(Company, room.company_id)
+    if not is_member and (company is None or not is_company_admin(db, company, current_user)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="仅项目成员或企业管理员可清空项目聊天",
+        )
+    room_chat_service.clear_messages(db, room.id)
