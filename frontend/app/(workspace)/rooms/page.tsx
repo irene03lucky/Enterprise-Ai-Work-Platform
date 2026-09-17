@@ -51,6 +51,17 @@ const MEMBER_STATUS_LABEL: Record<string, string> = {
   ACTIVE: "在线",
 };
 
+/* 成员状态圆点：让「谁在忙什么」在项目群里一眼可见 */
+const MEMBER_STATUS_DOT: Record<string, string> = {
+  ONLINE: "bg-green-500",
+  ACTIVE: "bg-green-500",
+  IN_MEETING: "bg-amber-500",
+  CUSTOMER_VISIT: "bg-blue-500",
+  BUSINESS_TRIP: "bg-purple-500",
+  LEAVE: "bg-gray-400",
+  OFFLINE: "bg-gray-300",
+};
+
 const TASK_STATUS_STYLE: Record<string, string> = {
   TODO: "bg-gray-100 text-gray-500",
   IN_PROGRESS: "bg-blue-50 text-blue-600",
@@ -81,6 +92,7 @@ export default function RoomsPage() {
   const [chat, setChat] = useState<RoomChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [chatSending, setChatSending] = useState(false);
+  const [chatError, setChatError] = useState<string | null>(null);
   const [roomTasks, setRoomTasks] = useState<Task[]>([]);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -159,6 +171,7 @@ export default function RoomsPage() {
     const content = chatInput.trim();
     if (!content || chatSending) return;
     setChatSending(true);
+    setChatError(null);
     setChatInput("");
     try {
       const created = await api<RoomChatMessage[]>(
@@ -169,9 +182,10 @@ export default function RoomsPage() {
       // 接管可能生成任务 / 项目 Update，静默刷新
       void loadRoomDetail(activeRoom.id);
       void loadRooms();
-    } catch {
-      /* 保留输入由用户重试 */
+    } catch (err) {
+      /* 保留输入由用户重试，并把失败原因显示出来（此前是静默吞掉） */
       setChatInput(content);
+      setChatError(err instanceof Error ? `发送失败：${err.message}` : "发送失败，请重试");
     } finally {
       setChatSending(false);
     }
@@ -372,7 +386,12 @@ export default function RoomsPage() {
                           </span>
                           <div className="mt-0.5 flex flex-wrap items-center gap-1">
                             {m.human_status && (
-                              <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500">
+                              <span className="flex items-center gap-1 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500">
+                                <span
+                                  className={`h-1.5 w-1.5 rounded-full ${
+                                    MEMBER_STATUS_DOT[m.human_status] ?? "bg-gray-300"
+                                  }`}
+                                />
                                 {MEMBER_STATUS_LABEL[m.human_status] ?? m.human_status}
                               </span>
                             )}
@@ -549,6 +568,34 @@ export default function RoomsPage() {
           </div>
           {tab === "chat" ? (
             <>
+              {/* 项目群成员状态条：有谁、什么状态、谁开了 AI 代理，一眼可见 */}
+              <div className="mb-2 flex flex-wrap items-center gap-1.5 border-b border-gray-100 pb-2">
+                {members.length === 0 ? (
+                  <span className="text-[11px] text-gray-300">暂无成员</span>
+                ) : (
+                  members.map((m) => (
+                    <span
+                      key={m.id}
+                      className="flex items-center gap-1 rounded-full bg-gray-50 px-2 py-0.5 text-[11px]"
+                    >
+                      <span
+                        className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                          MEMBER_STATUS_DOT[m.human_status ?? ""] ?? "bg-gray-300"
+                        }`}
+                      />
+                      <span className="font-medium text-gray-700">{m.user_name ?? "成员"}</span>
+                      <span className="text-gray-400">
+                        {MEMBER_STATUS_LABEL[m.human_status ?? ""] ?? "状态未知"}
+                      </span>
+                      {m.ai_twin_status === "AGENT" && (
+                        <span className="rounded bg-indigo-50 px-1 text-[10px] font-medium text-indigo-600">
+                          AI 代理
+                        </span>
+                      )}
+                    </span>
+                  ))
+                )}
+              </div>
               <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto pr-1">
                 {chat.length === 0 && (
                   <div className="flex h-full items-center justify-center text-xs text-gray-300">
@@ -596,6 +643,15 @@ export default function RoomsPage() {
                 )}
                 <div ref={chatEndRef} />
               </div>
+              {(chatError || chatSending) && (
+                <div
+                  className={`mt-2 rounded-lg px-2.5 py-1.5 text-xs ${
+                    chatError ? "bg-red-50 text-red-600" : "bg-indigo-50 text-indigo-600"
+                  }`}
+                >
+                  {chatError ?? "已发送，AI 分身正在生成回复…"}
+                </div>
+              )}
               {isMember && (
                 <div className="mt-2 flex gap-2">
                   <input

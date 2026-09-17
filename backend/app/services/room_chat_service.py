@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.ai.llm import get_chat_model
 from app.models import (
     AIActivityType,
+    AITwinStatus,
     Employee,
     EventVisibility,
     Room,
