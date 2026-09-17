@@ -24,7 +24,6 @@ _SMALL_MODELS_WITHOUT_TOOL_CALLING = {
     "qwen2.5:1b",
     "llama3.2:1b",
     "llama3.2:3b",
-    "qwen2.5:3b",
 }
 
 

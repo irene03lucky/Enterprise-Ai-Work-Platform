@@ -14,10 +14,15 @@
 import json
 import logging
 from collections.abc import AsyncGenerator
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.tools import tool
+from langgraph.prebuilt import create_react_agent
 from sqlalchemy.orm import Session
+
+from app.core.config import settings
 
 from app.ai.llm import get_chat_model
 from app.models import (
@@ -152,13 +157,10 @@ def build_workbench_context_block(
         TaskStatus.IN_PROGRESS: "进行中",
         TaskStatus.DONE: "已完成",
     }
-    open_tasks = [
-        t
-        for t in task_service.list_company_tasks(
-            db, company.id, assignee_employee_id=employee.id
-        )
-        if t.status != TaskStatus.DONE
-    ]
+    all_tasks = task_service.list_company_tasks(
+        db, company.id, assignee_employee_id=employee.id
+    )
+    open_tasks = [t for t in all_tasks if t.status != TaskStatus.DONE]
     if open_tasks:
         lines.append(f"【我的未完成任务明细】（共 {len(open_tasks)} 项）")
         for t in open_tasks[:8]:
@@ -177,6 +179,26 @@ def build_workbench_context_block(
             lines.append(f"- （其余 {len(open_tasks) - 8} 项已省略）")
     else:
         lines.append("【我的未完成任务明细】暂无未完成任务")
+
+    # 已完成任务（最近 3 条）：未走工具路径时也能回答"我完成了哪些任务"
+    done_tasks = sorted(
+        (t for t in all_tasks if t.status == TaskStatus.DONE),
+        key=lambda t: t.completed_at or t.created_at,
+        reverse=True,
+    )
+    if done_tasks:
+        lines.append(f"【最近已完成任务】（共 {len(done_tasks)} 项，仅列最近 3 条）")
+        for t in done_tasks[:3]:
+            if t.completed_at:
+                finished_at = t.completed_at
+                if finished_at.tzinfo is None:
+                    finished_at = finished_at.replace(tzinfo=timezone.utc)
+                finished = finished_at.astimezone().strftime("%m-%d")
+            else:
+                finished = "时间未知"
+            lines.append(f"- {t.title}（完成于 {finished}）")
+    else:
+        lines.append("【最近已完成任务】暂无")
     return "\n".join(lines)
 
 
@@ -190,7 +212,9 @@ TWIN_SYSTEM_PROMPT = """你是 {user_name} 的 AI 数字分身（{twin_display}�
 2. 不得代发正式业务回复，不得承诺时间/金额/报价/交期，除非明确已授权；
 3. 普通聊天不生成任务；只有明确工作指令才生成任务；
 4. 模糊、信息不足的事项，明确说明已记录为"待本人确认"，不要替本人做决定；
-5. 使用简体中文，简洁、专业、条理清晰。
+5. 涉及本人任务、日程、项目或具体时间的提问，应优先获取实时数据（可用工具时调用工具），
+   不要仅凭上下文猜测；不要要求用户自己查询或换算；
+6. 使用简体中文，简洁、专业、条理清晰。
 
 当前代理模式：{mode_desc}
 """
@@ -269,6 +293,240 @@ async def _stream_answer(
             text = "".join(b.get("text", "") for b in content if isinstance(b, dict))
         if text:
             yield _sse({"type": "token", "content": text})
+
+
+# ---------- AI 助手工具集（工具型 Agent 用） ----------
+
+# 工具名 → 前端状态提示
+_TOOL_STATUS = {
+    "get_current_time": "正在查询时间…",
+    "get_my_tasks": "正在查询你的任务…",
+    "get_my_schedule": "正在查询你的日程…",
+    "get_my_projects": "正在查询你参与的项目…",
+    "search_knowledge": "正在检索企业知识库…",
+}
+
+_TASK_STATUS_LABEL = {
+    TaskStatus.TODO: "待办",
+    TaskStatus.IN_PROGRESS: "进行中",
+    TaskStatus.DONE: "已完成",
+}
+
+
+def _make_workbench_tools(
+    db: Session,
+    company,
+    user,
+    employee: Employee | None,
+    sources_bag: list[dict],
+):
+    """构造 AI 助手工具集（闭包绑定当前用户与企业上下文）。
+
+    与 Project Agent 的设计一致：company_id / user 通过闭包注入而非工具参数，
+    模型无法越权查询他人数据，也不会因参数幻觉查错对象。
+    """
+
+    @tool
+    def get_current_time(city_or_timezone: str = "") -> str:
+        """查询当前时间。参数可为城市名（如"旧金山""东京""伦敦""纽约"）或
+        IANA 时区名（如 America/Los_Angeles）；留空则返回常用时区列表。
+        回答任何时间/日期相关问题前都必须调用本工具，不要凭推测回答。"""
+        raw = (city_or_timezone or "").strip()
+        if not raw:
+            return agent_service.now_line()
+
+        resolved = agent_service.resolve_timezone(raw)
+        if resolved is None:
+            return (
+                f"未能识别时区「{raw}」。可改用 IANA 时区名（如 America/Los_Angeles）。"
+                "当前常用时区如下：\n" + agent_service.now_line()
+            )
+        tz_name, label = resolved
+        now = datetime.now(ZoneInfo(tz_name))
+        weekday = "一二三四五六日"[now.weekday()]
+        offset = now.strftime("%z")
+        return (
+            f"{label}（{tz_name}，UTC{offset[:3]}:{offset[3:]}）当前时间："
+            f"{now.strftime('%Y-%m-%d')} 星期{weekday} {now.strftime('%H:%M')}"
+        )
+
+    @tool
+    def get_my_tasks(status: str = "OPEN") -> str:
+        """查询本人（当前登录用户）的任务清单。status 取值：
+        OPEN（未完成，默认）/ TODO / IN_PROGRESS / DONE / ALL。"""
+        if employee is None:
+            return "当前用户没有员工身份，无法查询个人任务。"
+        wanted = (status or "OPEN").upper()
+        tasks = task_service.list_company_tasks(
+            db, company.id, assignee_employee_id=employee.id
+        )
+        if wanted == "OPEN":
+            picked = [t for t in tasks if t.status != TaskStatus.DONE]
+        elif wanted == "ALL":
+            picked = list(tasks)
+        else:
+            picked = [
+                t
+                for t in tasks
+                if getattr(t.status, "value", str(t.status)) == wanted
+            ]
+        if not picked:
+            return f"没有符合条件的任务（status={wanted}）。"
+
+        today = datetime.now(timezone.utc).astimezone().date()
+        lines = [f"共 {len(picked)} 项："]
+        for t in picked[:15]:
+            status_value = t.status.value if hasattr(t.status, "value") else str(t.status)
+            parts = [t.title, f"状态：{_TASK_STATUS_LABEL.get(t.status, status_value)}"]
+            room_name = getattr(getattr(t, "room", None), "name", None)
+            if room_name:
+                parts.append(f"项目：{room_name}")
+            if t.due_date:
+                overdue = "（已逾期）" if t.due_date < today else ""
+                parts.append(f"截止：{t.due_date.isoformat()}{overdue}")
+            lines.append("- " + "｜".join(parts))
+        return "\n".join(lines)
+
+    @tool
+    def get_my_schedule(day: str = "today") -> str:
+        """查询本人日程。day 取值：today（今天，默认）/ tomorrow / YYYY-MM-DD。"""
+        if employee is None:
+            return "当前用户没有员工身份，无法查询日程。"
+        raw = (day or "today").strip().lower()
+        base = datetime.now(timezone.utc).astimezone().date()
+        if raw in ("", "today", "今天"):
+            target = base
+        elif raw in ("tomorrow", "明天"):
+            target = base + timedelta(days=1)
+        else:
+            try:
+                target = date.fromisoformat(raw)
+            except ValueError:
+                return f"日期「{day}」无法识别，请使用 today / tomorrow / YYYY-MM-DD。"
+
+        items = workbench_service.list_schedules_by_day(db, company.id, user.id, target)
+        if not items:
+            return f"{target.isoformat()} 没有日程安排。"
+        lines = [f"{target.isoformat()} 共 {len(items)} 项日程："]
+        for s in items:
+            start = s.start_time.astimezone().strftime("%H:%M")
+            end = (
+                "-" + s.end_time.astimezone().strftime("%H:%M") if s.end_time else ""
+            )
+            room = f"（项目：{s.room_name}）" if getattr(s, "room_name", None) else ""
+            lines.append(f"- {start}{end} {s.title}{room}")
+        return "\n".join(lines)
+
+    @tool
+    def get_my_projects() -> str:
+        """查询本人参与的项目及其最新动态（当前阶段、最近工作事件）。"""
+        if employee is None:
+            return "当前用户没有员工身份，无法查询项目。"
+        updates = workbench_service.list_project_updates(db, company.id, employee.id)
+        if not updates:
+            return "当前没有参与中的项目。"
+        lines = [f"共参与 {len(updates)} 个项目："]
+        for u in updates:
+            when = (
+                u.latest_event_at.astimezone().strftime("%m-%d %H:%M")
+                if u.latest_event_at
+                else "暂无事件"
+            )
+            detail = f"{u.latest_event_author or ''} {u.latest_event_content or ''}".strip()
+            lines.append(f"- {u.room_name}（阶段：{u.stage_label}）：{when} {detail}")
+        return "\n".join(lines)
+
+    @tool
+    def search_knowledge(query: str) -> str:
+        """检索企业知识库。当问题涉及公司制度、规范、产品资料、项目资料等
+        企业内部信息时，调用此工具获取资料。"""
+        results = rag_service.search(company.id, query, k=4)
+        if not results:
+            return (
+                "当前企业知识库中未检索到足够信息。请如实告知用户，"
+                "并建议在 Knowledge 模块上传相关文档后重试；不要编造答案。"
+            )
+        formatted: list[str] = []
+        for i, (text, meta) in enumerate(results, start=1):
+            source_name = meta.get("source", "未知文档")
+            score = meta.get("score", 0.0)
+            formatted.append(f"[{i}] 来源：{source_name}（相关度 {score:.0%}）\n{text}")
+            sources_bag.append(
+                {
+                    "document_id": meta.get("document_id"),
+                    "name": source_name,
+                    "score": round(score, 3),
+                }
+            )
+        return "【企业知识检索结果】\n\n" + "\n\n".join(formatted)
+
+    return [
+        get_current_time,
+        get_my_tasks,
+        get_my_schedule,
+        get_my_projects,
+        search_knowledge,
+    ]
+
+
+async def _stream_agent_answer(
+    db: Session,
+    company,
+    user,
+    employee: Employee | None,
+    system_prompt: str,
+    history: list[dict],
+    question: str,
+    sources_bag: list[dict],
+    thread_id: str | None,
+    model_id: str | None,
+    emitted_flag: list[bool],
+) -> AsyncGenerator[str, None]:
+    """工具型 Agent 路径（LangGraph ReAct）：模型按需调用时间/任务/日程/项目/知识检索工具。
+
+    相比「上下文全量注入」，可按需查询任意状态与时间范围（已完成任务、其他城市时间等）。
+    emitted_flag 用于把"是否产出过内容"回传给调用方，以决定是否降级。
+    """
+    model = get_chat_model(model_id)
+    tools = _make_workbench_tools(db, company, user, employee, sources_bag)
+    agent = create_react_agent(
+        model=model, tools=tools, checkpointer=agent_service.get_checkpointer()
+    )
+    messages: list = [SystemMessage(content=system_prompt)]
+    if thread_id is None:
+        for m in history:
+            if m.get("role") == "user":
+                messages.append(HumanMessage(content=m["content"]))
+            elif m.get("role") == "assistant":
+                messages.append(AIMessage(content=m["content"]))
+    messages.append(HumanMessage(content=question))
+
+    config: dict = {"recursion_limit": 25}
+    if thread_id:
+        config["configurable"] = {"thread_id": thread_id}
+
+    async for event in agent.astream_events(
+        {"messages": messages}, version="v2", config=config
+    ):
+        if event["event"] == "on_tool_start":
+            hint = _TOOL_STATUS.get(event.get("name", ""))
+            if hint:
+                yield _sse({"type": "status", "content": hint})
+        elif event["event"] == "on_chat_model_stream":
+            chunk = event["data"].get("chunk")
+            if chunk is None:
+                continue
+            content = chunk.content
+            text = ""
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                text = "".join(
+                    b.get("text", "") for b in content if isinstance(b, dict)
+                )
+            if text:
+                emitted_flag[0] = True
+                yield _sse({"type": "token", "content": text})
 
 
 async def stream_workbench_answer(
@@ -369,7 +627,20 @@ async def stream_workbench_answer(
     sources_bag: list[dict] = []
     tokens: list[str] = []
 
-    async def _pump():
+    # 是否启用工具型 Agent：大模型走 ReAct（可按需实时查询），小模型回退上下文注入
+    agent_mode = settings.AGENT_MODE
+    if agent_mode == "never":
+        use_agent = False
+    elif agent_mode == "always":
+        use_agent = True
+    else:
+        use_agent = agent_service.supports_tool_calling()
+
+    # 会话记忆线程：同一会话内 Agent 携带历史与历次工具调用轨迹
+    thread_id = conversation_id or f"workbench:{company.id}:{user.id}"
+
+    async def _context_path():
+        """上下文注入路径：全量注入本人信息/日程/项目/任务 + 知识检索后单次生成。"""
         async for evt in _stream_answer(
             company.id,
             system_prompt,
@@ -383,6 +654,37 @@ async def stream_workbench_answer(
             model_id=model_id,
         ):
             yield evt
+
+    async def _pump():
+        if not use_agent:
+            async for evt in _context_path():
+                yield evt
+            return
+
+        emitted = [False]
+        try:
+            async for evt in _stream_agent_answer(
+                db,
+                company,
+                user,
+                employee,
+                system_prompt,
+                history,
+                question,
+                sources_bag,
+                thread_id,
+                model_id,
+                emitted,
+            ):
+                yield evt
+        except Exception:  # noqa: BLE001
+            logger.warning("工具型 Agent 执行失败，降级为上下文注入路径", exc_info=True)
+
+        # Agent 全程未产出内容（小模型工具调用不稳定的典型表现）→ 降级兜底
+        if not emitted[0]:
+            yield _sse({"type": "status", "content": "正在整理工作上下文…"})
+            async for evt in _context_path():
+                yield evt
 
     # 先落库（任务/活动），再流式输出，保证前端看到的顺序与事实一致
     created_events: list[dict] = []

@@ -11,7 +11,7 @@ import logging
 import re
 from collections.abc import AsyncGenerator
 from datetime import datetime
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, available_timezones
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
@@ -35,13 +35,13 @@ def get_checkpointer() -> MemorySaver:
     return _checkpointer
 
 # 已验证无法稳定 tool-calling 的本地小模型：跳过 Agent 编排，直接 RAG
+# 注：qwen2.5:3b 经实测可稳定完成单步工具调用（时间/日程），已移出本清单。
 _SMALL_MODELS_WITHOUT_TOOL_CALLING = {
     "qwen2.5:0.5b",
     "qwen2.5:1.5b",
     "qwen2.5:1b",
     "llama3.2:1b",
     "llama3.2:3b",
-    "qwen2.5:3b",
 }
 
 SYSTEM_PROMPT_TEMPLATE = """你是「{company_name}」的企业 AI 工作助手。
@@ -110,6 +110,90 @@ _TZ_LABELS = {
     "Australia/Sydney": "悉尼时间",
     "UTC": "UTC 协调世界时",
 }
+
+
+# 中文城市 / 地区名 → IANA 时区（未收录的城市可直接用 IANA 名查询）
+_TZ_ALIASES = {
+    "北京": "Asia/Shanghai",
+    "上海": "Asia/Shanghai",
+    "深圳": "Asia/Shanghai",
+    "广州": "Asia/Shanghai",
+    "中国": "Asia/Shanghai",
+    "香港": "Asia/Hong_Kong",
+    "台北": "Asia/Taipei",
+    "台湾": "Asia/Taipei",
+    "东京": "Asia/Tokyo",
+    "大阪": "Asia/Tokyo",
+    "日本": "Asia/Tokyo",
+    "首尔": "Asia/Seoul",
+    "韩国": "Asia/Seoul",
+    "新加坡": "Asia/Singapore",
+    "曼谷": "Asia/Bangkok",
+    "泰国": "Asia/Bangkok",
+    "迪拜": "Asia/Dubai",
+    "阿联酋": "Asia/Dubai",
+    "孟买": "Asia/Kolkata",
+    "印度": "Asia/Kolkata",
+    "伦敦": "Europe/London",
+    "英国": "Europe/London",
+    "巴黎": "Europe/Paris",
+    "法国": "Europe/Paris",
+    "柏林": "Europe/Berlin",
+    "德国": "Europe/Berlin",
+    "莫斯科": "Europe/Moscow",
+    "俄罗斯": "Europe/Moscow",
+    "旧金山": "America/Los_Angeles",
+    "洛杉矶": "America/Los_Angeles",
+    "硅谷": "America/Los_Angeles",
+    "美西": "America/Los_Angeles",
+    "西雅图": "America/Los_Angeles",
+    "丹佛": "America/Denver",
+    "芝加哥": "America/Chicago",
+    "美中": "America/Chicago",
+    "纽约": "America/New_York",
+    "华盛顿": "America/New_York",
+    "美东": "America/New_York",
+    "圣保罗": "America/Sao_Paulo",
+    "巴西": "America/Sao_Paulo",
+    "悉尼": "Australia/Sydney",
+    "澳大利亚": "Australia/Sydney",
+    "utc": "UTC",
+    "协调世界时": "UTC",
+}
+
+
+def resolve_timezone(text: str) -> tuple[str, str] | None:
+    """把城市名或时区名解析为 (IANA 时区名, 中文展示名)；无法识别返回 None。
+
+    依次尝试：① 合法的 IANA 名；② 中文城市别名；③ 在 zoneinfo 全量时区里按城市名模糊匹配。
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None
+
+    # ① 直接是合法 IANA 名（如 America/Los_Angeles）
+    try:
+        ZoneInfo(raw)
+        return raw, _TZ_LABELS.get(raw, raw)
+    except Exception:  # noqa: BLE001
+        pass
+
+    key = raw.replace(" ", "").replace("_", "").lower()
+
+    # ② 中文别名（精确优先，再做包含匹配）
+    for alias, tz_name in _TZ_ALIASES.items():
+        if alias.lower() == key:
+            return tz_name, _TZ_LABELS.get(tz_name, tz_name)
+    for alias, tz_name in _TZ_ALIASES.items():
+        if alias.lower() in key or key in alias.lower():
+            return tz_name, _TZ_LABELS.get(tz_name, tz_name)
+
+    # ③ 英文城市名 → 在 zoneinfo 全量时区中按末段城市名匹配
+    for tz_name in sorted(available_timezones()):
+        city = tz_name.rsplit("/", 1)[-1].replace("_", "").lower()
+        if city and (city == key or city in key):
+            return tz_name, _TZ_LABELS.get(tz_name, tz_name)
+    return None
 
 
 def now_line() -> str:
