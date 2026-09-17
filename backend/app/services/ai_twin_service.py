@@ -215,8 +215,9 @@ TWIN_SYSTEM_PROMPT = """你是 {user_name} 的 AI 数字分身（{twin_display}�
 4. 模糊、信息不足的事项，明确说明已记录为"待本人确认"，不要替本人做决定；
 5. 涉及本人任务、日程、项目或具体时间的提问，应优先获取实时数据（可用工具时调用工具），
    不要仅凭上下文猜测；不要要求用户自己查询或换算；
-6. 回答时间问题必须写明"哪个城市/时区的几点"（如"北京时间 16:23、旧金山时间 01:23"），
-   不要含糊地说"当前时间是…"；用户一次问了多个城市或时区时，必须逐一列出，不得只答其中一个；
+6. 回答时间问题必须写明"哪个城市/时区的几点"（如"北京时间 16:51"），不要含糊地说"当前时间是…"；
+   **只回答用户问到的时区，绝不要罗列用户没有问到的时区**；未指定时区时默认回答北京时间；
+   只有用户一次问了多个时区时，才逐一列出每一个；
 7. 与公司无关的通用常识问题（地理、历史、文化、技术、写作、生活常识等）直接用你自己的
    知识正常回答，不得提「企业知识库」「上传文档」「未检索到」，也不得因此拒绝回答；
 8. 需要实时数据的问题（天气、股价、航班、最新新闻等）如实说明你无法获取实时数据并给出
@@ -339,19 +340,17 @@ def _make_workbench_tools(
 
     @tool
     def get_current_time(city_or_timezone: str = "") -> str:
-        """查询当前时间。参数可为城市名（如"旧金山""北京""东京"）或 IANA 时区名
-        （如 America/Los_Angeles）。**一次要查多个城市时，用逗号分隔写在一个参数里**
-        （如"北京,旧金山"），本工具会一次返回所有时区的时间；留空返回常用时区列表。
-        回答任何时间/日期相关问题前都应调用本工具（若所问时区已在上文【当前时间】
-        表中列出，也可直接使用表中数据）。"""
+        """查询当前时间。参数传用户问到的那**一个**城市名（如"旧金山""东京"）或
+        IANA 时区名（如 America/Los_Angeles）；用户一次问了多个城市时，用逗号分隔
+        写在一个参数里（如"北京,旧金山"）。仅在用户明确想看多个地区时间时才留空。"""
         raw = (city_or_timezone or "").strip()
         if not raw:
-            return agent_service.now_line()
+            return agent_service.timezone_overview()
 
         # 注意：不要按 "/" 切分，否则会破坏 America/Los_Angeles 这类 IANA 名
         parts = [p.strip() for p in re.split(r"[,，、;；]+", raw) if p.strip()]
         if not parts:
-            return agent_service.now_line()
+            return agent_service.timezone_overview()
 
         lines: list[str] = []
         unknown: list[str] = []
@@ -375,7 +374,10 @@ def _make_workbench_tools(
                 + "（可改用 IANA 时区名，如 America/Los_Angeles）"
             )
         if not lines:
-            return "未能识别任何时区。当前常用时区如下：\n" + agent_service.now_line()
+            return (
+                "未能识别任何时区。请提供城市名（如「旧金山」）或 IANA 时区名"
+                "（如 America/Los_Angeles）。"
+            )
         return "\n".join(lines)
 
     @tool
@@ -619,8 +621,21 @@ async def stream_workbench_answer(
         mode_desc=_mode_description(twin_status, human_status),
     )
     system_prompt += "\n\n" + build_workbench_context_block(db, company, user, employee)
-    # 时间锚点：否则被问「今天是几号」会编造训练期内的日期（且被质疑后仍坚持）
-    system_prompt += "\n\n" + agent_service.now_line()
+    # 时间信息注入：
+    # - 问句提到具体城市 → 只注入该城市（服务端算准），不注入北京时间，
+    #   否则小模型会拿两个时间相减、忽略夏令时算错（洛杉矶会算成 08:58）。
+    # - 未提到具体城市 → 注入主时区（默认北京时间）作为基准。
+    mentioned_times = agent_service.mentioned_timezones(question)
+    if mentioned_times:
+        system_prompt += (
+            "\n\n【时间信息】以下是用户本次问到的时区当前时间，直接采用作答：\n"
+            + "\n".join(mentioned_times)
+            + "\n（禁止做任何 UTC 换算或加减推算，直接使用上面的时间；"
+            "只回答用户问到的城市，不要罗列其他时区。）"
+        )
+    else:
+        # 时间锚点：否则被问「今天是几号」会编造训练期内的日期（且被质疑后仍坚持）
+        system_prompt += "\n\n" + agent_service.now_line()
 
     if room_id:
         system_prompt += (

@@ -102,7 +102,7 @@ _TZ_LABELS = {
     "Europe/Paris": "巴黎时间",
     "Europe/Berlin": "柏林时间",
     "Europe/Moscow": "莫斯科时间",
-    "America/Los_Angeles": "洛杉矶 / 旧金山时间（美西）",
+    "America/Los_Angeles": "洛杉矶/旧金山时间",
     "America/Denver": "丹佛时间（美西山区）",
     "America/Chicago": "芝加哥时间（美中）",
     "America/New_York": "纽约时间（美东）",
@@ -196,44 +196,98 @@ def resolve_timezone(text: str) -> tuple[str, str] | None:
     return None
 
 
-def now_line() -> str:
-    """当前时间锚点（多时区，必须显式注入提示词）。
-
-    LLM 自身没有时间概念，训练数据里也没有"今天"：
-    - 不注入时间 → 被问「今天是几号」会编造训练期内的日期，且被质疑后仍坚持；
-    - 只注入单一时区 → 被问「洛杉矶现在几点」只能让用户自行换算。
-
-    因此一次性给出常用时区的当前时间。时区清单由 APP_TIMEZONES 配置，
-    跨境电商 / 多市场团队把业务所在时区都列上即可。
-    """
-    lines = [
-        "【当前时间】以下是各时区此刻的时间，回答任何日期/时间相关问题都必须以此为准："
-    ]
-    for name in settings.app_timezone_list:
-        try:
-            tz = ZoneInfo(name)
-        except Exception:  # noqa: BLE001 - 无 tzdata 或名称非法时跳过该时区
-            continue
-        now = datetime.now(tz)
-        weekday = "一二三四五六日"[now.weekday()]
-        offset = now.strftime("%z")
-        label = _TZ_LABELS.get(name, name)
-        lines.append(
-            f"- {label}（{name}，UTC{offset[:3]}:{offset[3:]}）："
-            f"{now.strftime('%Y-%m-%d')} 星期{weekday} {now.strftime('%H:%M')}"
-        )
-    if len(lines) == 1:
-        # 兜底：拿不到任何时区数据时退回系统本地时区
-        now = datetime.now().astimezone()
-        weekday = "一二三四五六日"[now.weekday()]
-        lines.append(
-            f"- 本地时间：{now.strftime('%Y-%m-%d')} 星期{weekday} {now.strftime('%H:%M')}"
-        )
-    lines.append(
-        "表中未列出的城市，按其 UTC 偏移换算（或用工具查询）并在回答中说明依据；"
-        "不要要求用户自行查询或换算。回答时必须写明对应城市/时区名称，"
-        "不要含糊地说「当前时间是…」；用户一次询问多个时区时，必须逐一列出每一个。"
+def _format_zone(name: str) -> str:
+    """格式化单个时区，如「北京时间（Asia/Shanghai，UTC+08:00）2026-09-17 星期四 16:51」。"""
+    try:
+        tz = ZoneInfo(name)
+    except Exception:  # noqa: BLE001 - 无 tzdata 或名称非法
+        return ""
+    now = datetime.now(tz)
+    weekday = "一二三四五六日"[now.weekday()]
+    offset = now.strftime("%z")
+    label = _TZ_LABELS.get(name, name)
+    return (
+        f"{label}：{now.strftime('%Y-%m-%d')} 星期{weekday} {now.strftime('%H:%M')}"
+        f"（{name}，UTC{offset[:3]}:{offset[3:]}）"
     )
+
+
+def now_line() -> str:
+    """当前时间锚点（只注入主时区）。
+
+    不能把一整张时区表注入上下文——模型会把所有时区都复述给用户
+    （用户只问了一个城市，却收到七八条时间）。因此这里只给主时区
+    （APP_TIMEZONE，默认北京时间），其他城市由 get_current_time 工具按需查询。
+    """
+    primary = settings.APP_TIMEZONE
+    formatted = _format_zone(primary)
+    if not formatted:
+        formatted = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M")
+    return (
+        f"【当前时间】{formatted}。\n"
+        "时间回答规则：未指定时区时默认回答以上时间（北京时间）；"
+        "若上下文已给出用户所问城市的时间（如【用户本次问到的时区】），直接采用该时间；"
+        "未给出时调用 get_current_time 工具查询；"
+        "**严禁自己用 UTC 偏移加减推算**（夏令时会导致算错）；"
+        "**只回答用户问到的时区，不要罗列用户没有问到的时区**；"
+        "仅当用户一次问了多个时区时，才逐一列出每一个。不要要求用户自行换算。"
+    )
+
+
+def mentioned_timezones(text: str) -> list[str]:
+    """从用户问句中识别被提到的城市/时区，返回已算好的时间行。
+
+    为什么要在服务端算：小模型会自己用「UTC-8」硬算，忽略夏令时导致错误
+    （洛杉矶此刻是 UTC-07:00，模型却算成 UTC-08:00 的 08:56）。
+    因此用户提到哪个城市，就把该城市的时间直接算好注入，只注入被问到的时区，
+    不会像全量表那样把七八个时区一起倒给用户。
+    """
+    if not text:
+        return []
+    lowered = text.lower().replace(" ", "")
+    found: list[str] = []
+    seen: set[str] = set()
+    primary = settings.APP_TIMEZONE
+
+    # ① 主时区：仅当用户明确提到（如「北京」「北京时间」）才加入
+    primary_aliases = [a for a, tz in _TZ_ALIASES.items() if tz == primary]
+    if any(a in text for a in primary_aliases) or primary.lower() in lowered:
+        formatted = _format_zone(primary)
+        if formatted:
+            seen.add(primary)
+            found.append(f"- {formatted}")
+
+    # ② 其他时区：中文别名
+    for alias, tz_name in _TZ_ALIASES.items():
+        if tz_name in seen or tz_name == primary or alias not in text:
+            continue
+        formatted = _format_zone(tz_name)
+        if formatted:
+            seen.add(tz_name)
+            found.append(f"- {formatted}")
+
+    # ③ 其他时区：配置清单中的英文名 / 城市名（如 America/Los_Angeles、los angeles）
+    for tz_name in settings.app_timezone_list:
+        if tz_name in seen or tz_name == primary:
+            continue
+        city = tz_name.rsplit("/", 1)[-1].replace("_", "").lower()
+        if tz_name.lower() in lowered or (city and city in lowered):
+            formatted = _format_zone(tz_name)
+            if formatted:
+                seen.add(tz_name)
+                found.append(f"- {formatted}")
+    return found
+
+
+def timezone_overview() -> str:
+    """各时区当前时间一览（仅在用户明确要「各地时间」或工具参数为空时返回）。"""
+    lines = ["【各时区当前时间】"]
+    for name in settings.app_timezone_list:
+        formatted = _format_zone(name)
+        if formatted:
+            lines.append(f"- {formatted}")
+    if len(lines) == 1:
+        lines.append("- 未能获取时区数据")
     return "\n".join(lines)
 
 
