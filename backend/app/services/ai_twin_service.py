@@ -203,13 +203,19 @@ def build_workbench_context_block(
     return "\n".join(lines)
 
 
-TWIN_SYSTEM_PROMPT = """你是 {user_name} 的 AI 数字分身（{twin_display}），服务对象是本人与其同事。
+TWIN_SYSTEM_PROMPT = """你是 {user_name} 的 AI 数字分身（{twin_display}）。
+
+【提问者身份（最优先，勿违反）】
+本次对话的提问者就是 {user_name} 本人——本人正在 AI 工作台与自己的助手对话。
+**绝对不要**出现「这需要 {user_name} 本人确认」「请联系 {user_name} 本人」
+「请让 {user_name} 确认后回复」这类把本人当成第三方的说法；直接给出你的回答或建议即可。
+（只有本分身在项目群里替本人答复同事时，才使用"{user_name} 本人确认"的说法。）
 
 你可以依据的信息：下方【本人信息】【今日日程】【我参与的项目】【我的任务】，
 以及企业知识库检索到的资料。
 
 代理规则（必须遵守）：
-1. 只能在已授权范围内代理；未授权事项要明说"这需要 {user_name} 本人确认"；
+1. 只能在已授权范围内代理；面向同事的未授权事项要说明"这需要 {user_name} 本人确认"；
 2. 不得代发正式业务回复，不得承诺时间/金额/报价/交期，除非明确已授权；
 3. 普通聊天不生成任务；只有明确工作指令才生成任务；
 4. 模糊、信息不足的事项，明确说明已记录为"待本人确认"，不要替本人做决定；
@@ -225,6 +231,10 @@ TWIN_SYSTEM_PROMPT = """你是 {user_name} 的 AI 数字分身（{twin_display}�
 9. 不要输出「请稍等」「我正在查询」这类过渡语后就结束——要么直接回答，要么调用工具后回答；
 10. 回答简洁、条理清晰，一般控制在 300 字以内；禁止重复相同内容或罗列意义重复的条目；
 11. 使用简体中文，专业、条理清晰。
+
+公司制度类问题（差旅/报销/考勤/流程/福利等）：必须依据【企业知识库资料】作答。
+资料已给出时，直接引用其中的标准与数字并注明来源文档名；**不要**说"没有能力提供"、
+"无法给出具体标准"，也不要推给本人确认——资料就在你手上。
 
 当前代理模式：{mode_desc}
 """
@@ -246,8 +256,13 @@ async def _stream_answer(
     sources_bag: list[dict],
     use_knowledge: bool,
     model_id: str | None = None,
+    prefetched: list[tuple[str, dict]] | None = None,
 ) -> AsyncGenerator[str, None]:
-    """流式生成回答（可选企业知识检索增强）。"""
+    """流式生成回答（可选企业知识检索增强）。
+
+    prefetched：调用方已完成的检索结果（None = 本函数自行检索），
+    避免同一问句重复向量化；传空列表表示「已检索、无命中」。
+    """
     model = get_chat_model(model_id)
     messages: list = [SystemMessage(content=system_prompt)]
     for m in history:
@@ -262,7 +277,11 @@ async def _stream_answer(
     knowledge_block = ""
     if use_knowledge:
         try:
-            results = rag_service.search(company_id, question, k=4)
+            results = (
+                prefetched
+                if prefetched is not None
+                else rag_service.search(company_id, question, k=4)
+            )
             if results:
                 context = "\n\n".join(
                     f"【{meta.get('source', '未知文档')}】\n{text}" for text, meta in results
@@ -670,6 +689,19 @@ async def stream_workbench_answer(
     sources_bag: list[dict] = []
     tokens: list[str] = []
 
+    # ---------- 确定性知识预检索（决定走哪条链路） ----------
+    # 「要不要检索知识库」不能交给小模型的工具调用意愿：qwen2.5:3b 在 ReAct 编排下
+    # 经常一次工具都不调，直接凭系统提示作答（表现为「问什么问题都不翻知识库」）。
+    # 因此在生成前先检索一次：
+    #   命中企业资料 → 走确定性 RAG 链（资料与问题写进同一条消息，小模型不会忽略）；
+    #   未命中       → 仍走工具型 Agent，保留时间/任务/日程/项目等工具能力。
+    knowledge_hits: list[tuple[str, dict]] | None = None
+    try:
+        knowledge_hits = rag_service.search(company.id, question, k=4)
+    except Exception:  # noqa: BLE001
+        logger.warning("工作台知识预检索失败，仍按 Agent 路径处理", exc_info=True)
+        knowledge_hits = None
+
     # 是否启用工具型 Agent：大模型走 ReAct（可按需实时查询），小模型回退上下文注入
     agent_mode = settings.AGENT_MODE
     if agent_mode == "never":
@@ -695,11 +727,14 @@ async def stream_workbench_answer(
             # 那些权限只在「AI 分身代表本人在外部沟通中回应」时才生效。
             use_knowledge=True,
             model_id=model_id,
+            prefetched=knowledge_hits,
         ):
             yield evt
 
     async def _pump():
-        if not use_agent:
+        # 命中企业知识库时优先走确定性 RAG 链：小模型的 tool-calling 不可靠，
+        # 实测会跳过检索直接作答或推诿（「没有能力提供」「需要本人确认」）。
+        if not use_agent or knowledge_hits:
             async for evt in _context_path():
                 yield evt
             return
