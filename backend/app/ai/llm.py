@@ -33,6 +33,7 @@ def get_chat_model(model_id: str | None = None) -> BaseChatModel:
             base_url=settings.LLM_BASE_URL or None,
             api_key=settings.LLM_API_KEY or "EMPTY",
             temperature=0.1,
+            max_tokens=settings.LLM_MAX_OUTPUT_TOKENS,
         )
     from langchain_ollama import ChatOllama
 
@@ -40,6 +41,11 @@ def get_chat_model(model_id: str | None = None) -> BaseChatModel:
         model=model_name,
         base_url=settings.OLLAMA_BASE_URL,
         temperature=0.1,
+        # 小模型（3B）在长回答时容易陷入重复循环（如把同一项刷上百遍）：
+        # 用重复惩罚 + 输出上限双重约束，避免无限重复。
+        repeat_penalty=1.15,
+        repeat_last_n=256,
+        num_predict=settings.LLM_MAX_OUTPUT_TOKENS,
     )
 
 

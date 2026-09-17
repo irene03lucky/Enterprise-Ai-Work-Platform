@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     # 云端模式下额外可选模型（逗号分隔），用于前端「当前模型」下拉切换；
     # 例如：deepseek-chat,deepseek-reasoner
     LLM_EXTRA_MODELS: str = ""
+    # 单次回答最大输出 token 数：小模型（3B）长回答易陷入重复循环，需设上限兜底
+    LLM_MAX_OUTPUT_TOKENS: int = 800
 
     # 数据目录（容器内挂载卷）
     CHROMA_DIR: str = "data/chroma"
