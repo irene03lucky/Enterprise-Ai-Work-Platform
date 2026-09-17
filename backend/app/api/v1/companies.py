@@ -5,7 +5,11 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_company_with_access, get_current_user
+from app.api.deps import (
+    get_company_as_admin,
+    get_company_with_access,
+    get_current_user,
+)
 from app.core.database import get_db
 from app.models import Company, User
 from app.schemas.company import CompanyCreate, CompanyOut, CompanyUpdate
@@ -47,7 +51,7 @@ def get_company(company: Annotated[Company, Depends(get_company_with_access)]):
 @router.patch("/{company_id}", response_model=CompanyOut)
 def update_company(
     data: CompanyUpdate,
-    company: Annotated[Company, Depends(get_company_with_access)],
+    company: Annotated[Company, Depends(get_company_as_admin)],
     db: Annotated[Session, Depends(get_db)],
 ):
     return company_service.update_company(db, company, data)
@@ -55,7 +59,7 @@ def update_company(
 
 @router.delete("/{company_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_company(
-    company: Annotated[Company, Depends(get_company_with_access)],
+    company: Annotated[Company, Depends(get_company_as_admin)],
     db: Annotated[Session, Depends(get_db)],
 ):
     company_service.delete_company(db, company)

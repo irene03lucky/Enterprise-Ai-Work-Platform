@@ -90,6 +90,8 @@ export interface CompanyMembership extends CompanyBrief {
   department_name: string | null;
   position: string | null;
   status: EmployeeStatus | null;
+  /** 是否为企业管理员（所有者或持有「管理员」角色） */
+  is_company_admin: boolean;
 }
 
 export interface Company extends CompanyBrief {

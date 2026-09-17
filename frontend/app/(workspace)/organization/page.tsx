@@ -25,9 +25,19 @@ type ModalState =
   | { kind: "emp-edit"; employee: Employee }
   | null;
 
+/** 非管理员时的只读提示：组织架构维护仅限企业管理员 */
+function ReadOnlyHint() {
+  return (
+    <p className="border-t border-gray-100 pt-5 text-xs leading-relaxed text-gray-400">
+      仅企业管理员可维护组织架构。你可以查看全部信息；个人工作状态请在 Work Center
+      右侧「你的身份与 AI 分身」中修改。
+    </p>
+  );
+}
+
 export default function OrganizationPage() {
   const router = useRouter();
-  const { currentCompany, refresh } = useAuth();
+  const { currentCompany, isCompanyAdmin, refresh } = useAuth();
   const [tree, setTree] = useState<CompanyTreeNode | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -110,11 +120,15 @@ export default function OrganizationPage() {
             <DetailRow label="部门数" value={String(deptCount)} />
             <DetailRow label="员工数" value={String(allEmployees.length)} />
           </dl>
-          <div className="flex flex-wrap gap-2 border-t border-gray-100 pt-5">
-            <button className="btn-secondary" onClick={() => setModal({ kind: "company-edit" })}>
-              <EditIcon width={14} height={14} /> 编辑企业
-            </button>
-          </div>
+          {isCompanyAdmin ? (
+            <div className="flex flex-wrap gap-2 border-t border-gray-100 pt-5">
+              <button className="btn-secondary" onClick={() => setModal({ kind: "company-edit" })}>
+                <EditIcon width={14} height={14} /> 编辑企业
+              </button>
+            </div>
+          ) : (
+            <ReadOnlyHint />
+          )}
         </div>
       );
     }
@@ -137,28 +151,32 @@ export default function OrganizationPage() {
             <DetailRow label="子部门" value={String(dept.children.length)} />
             <DetailRow label="成员合计" value={String(total)} />
           </dl>
-          <div className="flex flex-wrap gap-2 border-t border-gray-100 pt-5">
-            <button className="btn-secondary" onClick={() => setModal({ kind: "dept-create", lockedParent: dept.id })}>
-              <PlusIcon width={14} height={14} /> 子部门
-            </button>
-            <button className="btn-secondary" onClick={() => setModal({ kind: "emp-create", lockedDepartment: dept.id })}>
-              <PlusIcon width={14} height={14} /> 添加成员
-            </button>
-            <button className="btn-secondary" onClick={() => setModal({ kind: "dept-edit", dept })}>
-              <EditIcon width={14} height={14} /> 编辑
-            </button>
-            <button
-              className="btn-danger"
-              onClick={async () => {
-                if (!window.confirm(`确定删除部门「${dept.name}」？其子部门与成员将一并移除/移出。`)) return;
-                await api(`/companies/${companyId}/departments/${dept.id}`, { method: "DELETE" });
-                setSelection({ type: "company" });
-                loadTree();
-              }}
-            >
-              <TrashIcon width={14} height={14} /> 删除
-            </button>
-          </div>
+          {isCompanyAdmin ? (
+            <div className="flex flex-wrap gap-2 border-t border-gray-100 pt-5">
+              <button className="btn-secondary" onClick={() => setModal({ kind: "dept-create", lockedParent: dept.id })}>
+                <PlusIcon width={14} height={14} /> 子部门
+              </button>
+              <button className="btn-secondary" onClick={() => setModal({ kind: "emp-create", lockedDepartment: dept.id })}>
+                <PlusIcon width={14} height={14} /> 添加成员
+              </button>
+              <button className="btn-secondary" onClick={() => setModal({ kind: "dept-edit", dept })}>
+                <EditIcon width={14} height={14} /> 编辑
+              </button>
+              <button
+                className="btn-danger"
+                onClick={async () => {
+                  if (!window.confirm(`确定删除部门「${dept.name}」？其子部门与成员将一并移除/移出。`)) return;
+                  await api(`/companies/${companyId}/departments/${dept.id}`, { method: "DELETE" });
+                  setSelection({ type: "company" });
+                  loadTree();
+                }}
+              >
+                <TrashIcon width={14} height={14} /> 删除
+              </button>
+            </div>
+          ) : (
+            <ReadOnlyHint />
+          )}
         </div>
       );
     }
@@ -185,22 +203,26 @@ export default function OrganizationPage() {
             <dd><StatusBadge status={emp.status} /></dd>
           </div>
         </dl>
-        <div className="flex flex-wrap gap-2 border-t border-gray-100 pt-5">
-          <button className="btn-secondary" onClick={() => setModal({ kind: "emp-edit", employee: emp })}>
-            <EditIcon width={14} height={14} /> 编辑
-          </button>
-          <button
-            className="btn-danger"
-            onClick={async () => {
-              if (!window.confirm(`确定将「${emp.user_name}」移出企业？`)) return;
-              await api(`/companies/${companyId}/employees/${emp.id}`, { method: "DELETE" });
-              setSelection({ type: "company" });
-              loadTree();
-            }}
-          >
-            <TrashIcon width={14} height={14} /> 移出企业
-          </button>
-        </div>
+        {isCompanyAdmin ? (
+          <div className="flex flex-wrap gap-2 border-t border-gray-100 pt-5">
+            <button className="btn-secondary" onClick={() => setModal({ kind: "emp-edit", employee: emp })}>
+              <EditIcon width={14} height={14} /> 编辑
+            </button>
+            <button
+              className="btn-danger"
+              onClick={async () => {
+                if (!window.confirm(`确定将「${emp.user_name}」移出企业？`)) return;
+                await api(`/companies/${companyId}/employees/${emp.id}`, { method: "DELETE" });
+                setSelection({ type: "company" });
+                loadTree();
+              }}
+            >
+              <TrashIcon width={14} height={14} /> 移出企业
+            </button>
+          </div>
+        ) : (
+          <ReadOnlyHint />
+        )}
       </div>
     );
   }
@@ -252,14 +274,16 @@ export default function OrganizationPage() {
             企业、部门与成员的组织结构。AI 将基于此理解你的企业。
           </p>
         </div>
-        <div className="flex gap-2">
-          <button className="btn-secondary" onClick={() => setModal({ kind: "dept-create", lockedParent: null })}>
-            <PlusIcon width={14} height={14} /> 新建部门
-          </button>
-          <button className="btn-primary" onClick={() => setModal({ kind: "emp-create", lockedDepartment: null })}>
-            <PlusIcon width={14} height={14} /> 添加员工
-          </button>
-        </div>
+        {isCompanyAdmin && (
+          <div className="flex gap-2">
+            <button className="btn-secondary" onClick={() => setModal({ kind: "dept-create", lockedParent: null })}>
+              <PlusIcon width={14} height={14} /> 新建部门
+            </button>
+            <button className="btn-primary" onClick={() => setModal({ kind: "emp-create", lockedDepartment: null })}>
+              <PlusIcon width={14} height={14} /> 添加员工
+            </button>
+          </div>
+        )}
       </div>
 
       {error && (

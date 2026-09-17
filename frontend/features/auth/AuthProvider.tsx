@@ -16,6 +16,8 @@ interface AuthContextValue {
   user: User | null;
   companies: CompanyMembership[];
   currentCompany: CompanyMembership | null;
+  /** 当前企业是否为企业管理员（所有者或持有「管理员」角色） */
+  isCompanyAdmin: boolean;
   loading: boolean;
   setCurrentCompanyId: (id: string) => void;
   refresh: () => Promise<void>;
@@ -67,12 +69,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const currentCompany =
     companies.find((c) => c.id === currentCompanyId) ?? companies[0] ?? null;
 
+  const isCompanyAdmin = currentCompany?.is_company_admin ?? false;
+
   return (
     <AuthContext.Provider
       value={{
         user,
         companies,
         currentCompany,
+        isCompanyAdmin,
         loading,
         setCurrentCompanyId,
         refresh,

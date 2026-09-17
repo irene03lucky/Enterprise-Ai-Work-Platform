@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_company_with_access
+from app.api.deps import get_company_as_admin, get_company_with_access
 from app.core.database import get_db
 from app.models import Company
 from app.schemas.department import DepartmentCreate, DepartmentOut, DepartmentUpdate
@@ -25,7 +25,7 @@ def list_departments(
 @router.post("", response_model=DepartmentOut, status_code=status.HTTP_201_CREATED)
 def create_department(
     data: DepartmentCreate,
-    company: Annotated[Company, Depends(get_company_with_access)],
+    company: Annotated[Company, Depends(get_company_as_admin)],
     db: Annotated[Session, Depends(get_db)],
 ):
     try:
@@ -50,7 +50,7 @@ def get_department(
 def update_department(
     department_id: str,
     data: DepartmentUpdate,
-    company: Annotated[Company, Depends(get_company_with_access)],
+    company: Annotated[Company, Depends(get_company_as_admin)],
     db: Annotated[Session, Depends(get_db)],
 ):
     department = department_service.get_department(db, department_id)
@@ -65,7 +65,7 @@ def update_department(
 @router.delete("/{department_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_department(
     department_id: str,
-    company: Annotated[Company, Depends(get_company_with_access)],
+    company: Annotated[Company, Depends(get_company_as_admin)],
     db: Annotated[Session, Depends(get_db)],
 ):
     department = department_service.get_department(db, department_id)

@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_company_with_access
+from app.api.deps import get_company_as_admin, get_company_with_access
 from app.core.database import get_db
 from app.models import Company
 from app.schemas.role import RoleAssign, RoleCreate, RoleOut, UserRoleOut
@@ -25,7 +25,7 @@ def list_roles(
 @router.post("", response_model=RoleOut, status_code=status.HTTP_201_CREATED)
 def create_role(
     data: RoleCreate,
-    company: Annotated[Company, Depends(get_company_with_access)],
+    company: Annotated[Company, Depends(get_company_as_admin)],
     db: Annotated[Session, Depends(get_db)],
 ):
     return role_service.create_role(db, company, data)
@@ -34,7 +34,7 @@ def create_role(
 @router.delete("/{role_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_role(
     role_id: str,
-    company: Annotated[Company, Depends(get_company_with_access)],
+    company: Annotated[Company, Depends(get_company_as_admin)],
     db: Annotated[Session, Depends(get_db)],
 ):
     from sqlalchemy import select
@@ -50,7 +50,7 @@ def delete_role(
 @router.post("/assign", response_model=UserRoleOut)
 def assign_role(
     data: RoleAssign,
-    company: Annotated[Company, Depends(get_company_with_access)],
+    company: Annotated[Company, Depends(get_company_as_admin)],
     db: Annotated[Session, Depends(get_db)],
 ):
     try:

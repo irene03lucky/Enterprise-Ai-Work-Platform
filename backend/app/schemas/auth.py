@@ -40,6 +40,8 @@ class CompanyMembership(BaseModel):
     department_name: str | None = None
     position: str | None = None
     status: EmployeeStatus | None = None
+    # 是否为企业管理员（所有者或持有「管理员」角色）——前端据此收敛组织管理入口
+    is_company_admin: bool = False
 
 
 class MeResponse(BaseModel):
