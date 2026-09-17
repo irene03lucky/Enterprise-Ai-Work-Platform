@@ -207,9 +207,9 @@ TWIN_SYSTEM_PROMPT = """你是 {user_name} 的 AI 数字分身（{twin_display}�
 
 【提问者身份（最优先，勿违反）】
 本次对话的提问者就是 {user_name} 本人——本人正在 AI 工作台与自己的助手对话。
-**绝对不要**出现「这需要 {user_name} 本人确认」「请联系 {user_name} 本人」
-「请让 {user_name} 确认后回复」这类把本人当成第三方的说法；直接给出你的回答或建议即可。
-（只有本分身在项目群里替本人答复同事时，才使用"{user_name} 本人确认"的说法。）
+不要把 {user_name} 当成第三方：不要让本人去联系本人、不要说要本人自己确认后才能回复；
+需要拍板时，直接给出你的建议，或说明该口径应由哪个部门确认。
+（只有本分身在项目群里替本人答复同事时，才需要说明某事项待本人确认。）
 
 你可以依据的信息：下方【本人信息】【今日日程】【我参与的项目】【我的任务】，
 以及企业知识库检索到的资料。
@@ -231,10 +231,15 @@ TWIN_SYSTEM_PROMPT = """你是 {user_name} 的 AI 数字分身（{twin_display}�
 9. 不要输出「请稍等」「我正在查询」这类过渡语后就结束——要么直接回答，要么调用工具后回答；
 10. 回答简洁、条理清晰，一般控制在 300 字以内；禁止重复相同内容或罗列意义重复的条目；
 11. 使用简体中文，专业、条理清晰。
+12. 只回答用户这一次的提问：不要续写对话、不要模拟用户或他人的后续发言，
+    不要输出说话人名字、签名、"某某："这类对话标记或分隔线，也不要把上文原样粘贴回来；
+    回答完本次问题立即结束。
+13. 不确定的具体事实（时间、金额、地址、开放时间等）宁可说明不确定，不要编造。
 
 公司制度类问题（差旅/报销/考勤/流程/福利等）：必须依据【企业知识库资料】作答。
 资料已给出时，直接引用其中的标准与数字并注明来源文档名；**不要**说"没有能力提供"、
 "无法给出具体标准"，也不要推给本人确认——资料就在你手上。
+与公司无关的通用常识问题（地理、历史、文化、技术、生活常识等）：直接用你自己的知识回答。
 
 当前代理模式：{mode_desc}
 """
@@ -313,7 +318,15 @@ async def _stream_answer(
         except Exception:  # noqa: BLE001
             logger.warning("工作台知识检索失败，忽略", exc_info=True)
 
-    messages.append(HumanMessage(content=f"{knowledge_block}【问题】\n{question}"))
+    messages.append(
+        HumanMessage(
+            content=(
+                f"{knowledge_block}【问题】\n{question}\n\n"
+                "（只回答这一个问题；不要续写对话、不要模拟他人发言、"
+                "不要输出说话人名字或签名。）"
+            )
+        )
+    )
 
     async for chunk in model.astream(messages):
         content = chunk.content
@@ -491,9 +504,15 @@ def _make_workbench_tools(
         企业内部信息时，调用此工具获取资料。"""
         results = rag_service.search(company.id, query, k=4)
         if not results:
+            # 不能一律回「未检索到」：模型（尤其 3B）会把这句话套到通用常识问题上，
+            # 出现「问大明湖却答没有能力查询」的拒答。这里按问题类型给出分流指引。
             return (
-                "当前企业知识库中未检索到足够信息。请如实告知用户，"
-                "并建议在 Knowledge 模块上传相关文档后重试；不要编造答案。"
+                "本次未在企业知识库中检索到相关资料。请先判断问题类型，不要一律套用「未检索到」：\n"
+                "1) 通用常识问题（地理、历史、文化、技术、生活常识等）→ 直接用你自己的知识正常回答，"
+                "禁止提「知识库」「上传文档」「未检索到」；\n"
+                "2) 只有问题确实在问企业内部信息（公司制度、产品资料、项目资料）时，"
+                "才说明企业知识库中暂无相关资料，并建议在 Knowledge 模块上传文档；\n"
+                "3) 需要实时数据（天气、股价、航班、新闻等）→ 如实说明无法获取，不要编造具体数值。"
             )
         formatted: list[str] = []
         for i, (text, meta) in enumerate(results, start=1):
@@ -530,6 +549,7 @@ async def _stream_agent_answer(
     thread_id: str | None,
     model_id: str | None,
     emitted_flag: list[bool],
+    knowledge_hits: list[tuple[str, dict]] | None = None,
 ) -> AsyncGenerator[str, None]:
     """工具型 Agent 路径（LangGraph ReAct）：模型按需调用时间/任务/日程/项目/知识检索工具。
 
@@ -548,7 +568,19 @@ async def _stream_agent_answer(
                 messages.append(HumanMessage(content=m["content"]))
             elif m.get("role") == "assistant":
                 messages.append(AIMessage(content=m["content"]))
-    messages.append(HumanMessage(content=question))
+    # 提醒放在紧邻问题处（小模型对系统提示里靠前的规则容易忽略）：
+    # 企业知识库没命中 ≠ 不能回答——通用常识问题必须用它自己的知识作答。
+    tail_hint = ""
+    if not knowledge_hits:
+        tail_hint = (
+            "\n\n（本轮企业知识库未检索到相关资料。若这是通用常识问题"
+            "（地理、历史、文化、技术、生活常识等），请直接用你自己的知识回答，"
+            "不要说「未检索到」、也不要让用户自己去查；"
+            "只有确实在问企业内部信息时才说明知识库暂无相关资料。）"
+        )
+    messages.append(HumanMessage(content=f"{question}{tail_hint}\n\n"
+                                       "（只回答这一个问题；不要续写对话、不要模拟他人发言、"
+                                       "不要输出说话人名字或签名。）"))
 
     config: dict = {"recursion_limit": 25}
     if thread_id:
@@ -753,6 +785,7 @@ async def stream_workbench_answer(
                 thread_id,
                 model_id,
                 emitted,
+                knowledge_hits,
             ):
                 yield evt
         except Exception:  # noqa: BLE001

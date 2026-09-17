@@ -216,7 +216,13 @@ async def _generate_reply(db: Session, room: Room, emp, question: str, asker=Non
         result = await get_chat_model().ainvoke(
             [
                 SystemMessage(content=system),
-                HumanMessage(content=f"项目上下文：\n{context}\n\n群消息：{question}"),
+                HumanMessage(
+            content=(
+                f"项目上下文：\n{context}\n\n群消息：{question}\n\n"
+                "（只回复这一条群消息；不要续写对话、不要模拟其他人发言、"
+                "不要输出说话人名字或签名。）"
+            )
+        ),
             ]
         )
         text = str(result.content).strip()
