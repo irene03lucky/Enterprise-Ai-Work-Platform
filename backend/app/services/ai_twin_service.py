@@ -30,6 +30,7 @@ from app.models import (
 )
 from app.schemas.task import TaskCreate, TaskProposal
 from app.services import (
+    agent_service,
     conversation_service,
     project_agent_service,
     rag_service,
@@ -292,6 +293,8 @@ async def stream_workbench_answer(
         mode_desc=_mode_description(twin_status, human_status),
     )
     system_prompt += "\n\n" + build_workbench_context_block(db, company, user, employee)
+    # 时间锚点：否则被问「今天是几号」会编造训练期内的日期（且被质疑后仍坚持）
+    system_prompt += "\n\n" + agent_service.now_line()
 
     if room_id:
         system_prompt += (

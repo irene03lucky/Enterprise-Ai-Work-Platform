@@ -10,6 +10,7 @@ import json
 import logging
 import re
 from collections.abc import AsyncGenerator
+from datetime import datetime
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
@@ -85,6 +86,21 @@ def _sse(event: dict) -> str:
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
+def now_line() -> str:
+    """当前时间锚点（必须显式注入提示词）。
+
+    LLM 自身没有时间概念，训练数据里也没有"今天"。若提示词不给出当前时间，
+    被问「今天是几号」时只能编造一个训练期内的日期，且被质疑后仍会坚持。
+    各对话链路（AI 助手 / Knowledge Agent / Project Agent / Room）统一注入本行。
+    """
+    now = datetime.now().astimezone()
+    weekday = "一二三四五六日"[now.weekday()]
+    return (
+        f"【当前时间】{now.strftime('%Y-%m-%d')} 星期{weekday} {now.strftime('%H:%M')}"
+        "（回答任何与日期/时间有关的问题时以此为准，不要自行推测）"
+    )
+
+
 def _make_knowledge_search_tool(company_id: str, sources_bag: list[dict]):
     """构造绑定了企业上下文的 knowledge_search 工具。
 
@@ -135,6 +151,8 @@ def _build_messages(
             department=profile.get("department", "未分配部门"),
             position_part=f"·{profile['position']}" if profile.get("position") else "",
         )
+        + "\n\n"
+        + now_line()
     )
     messages = [system]
     for m in history:
@@ -191,7 +209,11 @@ async def _fallback_rag(
         else:
             context = "（知识库中未检索到相关资料，请依据系统提示中的项目上下文回答）"
 
-        messages: list = [SystemMessage(content=system_prompt or RAG_SYSTEM_PROMPT)]
+        messages: list = [
+            SystemMessage(
+                content=f"{system_prompt or RAG_SYSTEM_PROMPT}\n\n{now_line()}"
+            )
+        ]
         for m in (history or []):
             if m.get("role") == "user":
                 messages.append(HumanMessage(content=m["content"]))

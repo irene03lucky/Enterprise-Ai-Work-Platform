@@ -27,6 +27,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-eai_dev_password}
       POSTGRES_DB: ${POSTGRES_DB:-eai}
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      # 时区：容器默认 UTC 会让「今日日程 / 当前时间」等按天计算错位
+      TZ: ${TZ:-Asia/Shanghai}
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-1440}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
       SEED_ON_STARTUP: "true"
@@ -65,6 +67,7 @@ services:
     container_name: eai-frontend
     environment:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      TZ: ${TZ:-Asia/Shanghai}
     ports:
       - "3000:3000"
     depends_on:

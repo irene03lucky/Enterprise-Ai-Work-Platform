@@ -830,6 +830,8 @@ async def stream_project_answer(
         + "\n"
         + BOUNDARY_RULES
     )
+    # 时间锚点：LLM 无时间概念，必须显式注入（否则会编造日期）
+    system_prompt += "\n" + agent_service.now_line() + "\n"
     if intent in (INTENT_ACTION, INTENT_FOLLOW_UP) and proposals:
         facts = "\n".join(
             f"- 任务：{p.title}（负责人：{p.assignee_name or '未指定'}，"

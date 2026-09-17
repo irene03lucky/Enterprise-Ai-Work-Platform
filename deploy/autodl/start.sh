@@ -4,14 +4,17 @@
 #   bash deploy/autodl/start.sh   # 启动全部
 #   bash deploy/autodl/start.sh stop
 # 单公网口架构（AutoDL 自定义服务 6006）：
-#   Caddy :6006 ── /api/v1/* ──> uvicorn :8000
-#              └─ 其余     ──> Next.js :3000
+#   nginx :6006 ── /api/v1/* ──> uvicorn :8000
+#               └─ 其余     ──> Next.js :3000
 # =============================================================
 set -e
 
 EAI_DIR="${EAI_DIR:-/root/autodl-tmp/eai}"
 RUN_DIR="$EAI_DIR/run"
 mkdir -p "$RUN_DIR"
+
+# 时区：实例默认 UTC，会让「今日日程 / 当前时间」等按天计算错位
+export TZ="${TZ:-Asia/Shanghai}"
 
 if [ "$1" = "stop" ]; then
   for f in nginx backend frontend; do
