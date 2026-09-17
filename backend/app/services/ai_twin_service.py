@@ -13,6 +13,7 @@
 
 import json
 import logging
+import re
 from collections.abc import AsyncGenerator
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -214,7 +215,9 @@ TWIN_SYSTEM_PROMPT = """你是 {user_name} 的 AI 数字分身（{twin_display}�
 4. 模糊、信息不足的事项，明确说明已记录为"待本人确认"，不要替本人做决定；
 5. 涉及本人任务、日程、项目或具体时间的提问，应优先获取实时数据（可用工具时调用工具），
    不要仅凭上下文猜测；不要要求用户自己查询或换算；
-6. 使用简体中文，简洁、专业、条理清晰。
+6. 回答时间问题必须写明"哪个城市/时区的几点"（如"北京时间 16:23、旧金山时间 01:23"），
+   不要含糊地说"当前时间是…"；用户一次问了多个城市或时区时，必须逐一列出，不得只答其中一个；
+7. 使用简体中文，简洁、专业、条理清晰。
 
 当前代理模式：{mode_desc}
 """
@@ -328,27 +331,44 @@ def _make_workbench_tools(
 
     @tool
     def get_current_time(city_or_timezone: str = "") -> str:
-        """查询当前时间。参数可为城市名（如"旧金山""东京""伦敦""纽约"）或
-        IANA 时区名（如 America/Los_Angeles）；留空则返回常用时区列表。
-        回答任何时间/日期相关问题前都必须调用本工具，不要凭推测回答。"""
+        """查询当前时间。参数可为城市名（如"旧金山""北京""东京"）或 IANA 时区名
+        （如 America/Los_Angeles）。**一次要查多个城市时，用逗号分隔写在一个参数里**
+        （如"北京,旧金山"），本工具会一次返回所有时区的时间；留空返回常用时区列表。
+        回答任何时间/日期相关问题前都应调用本工具（若所问时区已在上文【当前时间】
+        表中列出，也可直接使用表中数据）。"""
         raw = (city_or_timezone or "").strip()
         if not raw:
             return agent_service.now_line()
 
-        resolved = agent_service.resolve_timezone(raw)
-        if resolved is None:
-            return (
-                f"未能识别时区「{raw}」。可改用 IANA 时区名（如 America/Los_Angeles）。"
-                "当前常用时区如下：\n" + agent_service.now_line()
+        # 注意：不要按 "/" 切分，否则会破坏 America/Los_Angeles 这类 IANA 名
+        parts = [p.strip() for p in re.split(r"[,，、;；]+", raw) if p.strip()]
+        if not parts:
+            return agent_service.now_line()
+
+        lines: list[str] = []
+        unknown: list[str] = []
+        for part in parts:
+            resolved = agent_service.resolve_timezone(part)
+            if resolved is None:
+                unknown.append(part)
+                continue
+            tz_name, label = resolved
+            now = datetime.now(ZoneInfo(tz_name))
+            weekday = "一二三四五六日"[now.weekday()]
+            offset = now.strftime("%z")
+            lines.append(
+                f"{label}（{tz_name}，UTC{offset[:3]}:{offset[3:]}）当前时间："
+                f"{now.strftime('%Y-%m-%d')} 星期{weekday} {now.strftime('%H:%M')}"
             )
-        tz_name, label = resolved
-        now = datetime.now(ZoneInfo(tz_name))
-        weekday = "一二三四五六日"[now.weekday()]
-        offset = now.strftime("%z")
-        return (
-            f"{label}（{tz_name}，UTC{offset[:3]}:{offset[3:]}）当前时间："
-            f"{now.strftime('%Y-%m-%d')} 星期{weekday} {now.strftime('%H:%M')}"
-        )
+        if unknown:
+            lines.append(
+                "未能识别："
+                + "、".join(unknown)
+                + "（可改用 IANA 时区名，如 America/Los_Angeles）"
+            )
+        if not lines:
+            return "未能识别任何时区。当前常用时区如下：\n" + agent_service.now_line()
+        return "\n".join(lines)
 
     @tool
     def get_my_tasks(status: str = "OPEN") -> str:
