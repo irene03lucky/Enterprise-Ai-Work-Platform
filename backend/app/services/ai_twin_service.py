@@ -27,6 +27,7 @@ from app.models import (
     Employee,
     EmployeeStatus,
     TaskSource,
+    TaskStatus,
 )
 from app.schemas.task import TaskCreate, TaskProposal
 from app.services import (
@@ -140,9 +141,42 @@ def build_workbench_context_block(
     summary = workbench_service.task_summary(db, company.id, employee.id)
     lines += [
         "",
-        "【我的任务】"
+        "【我的任务统计】"
         f"待办 {summary.todo} · 进行中 {summary.in_progress} · 已完成 {summary.done} · 逾期 {summary.overdue}",
     ]
+
+    # 任务明细：只给数量时模型无法回答"我的任务有哪些/某某是不是我的任务"，
+    # 因此必须把未完成任务的标题与出处一并注入上下文。
+    task_status_label = {
+        TaskStatus.TODO: "待办",
+        TaskStatus.IN_PROGRESS: "进行中",
+        TaskStatus.DONE: "已完成",
+    }
+    open_tasks = [
+        t
+        for t in task_service.list_company_tasks(
+            db, company.id, assignee_employee_id=employee.id
+        )
+        if t.status != TaskStatus.DONE
+    ]
+    if open_tasks:
+        lines.append(f"【我的未完成任务明细】（共 {len(open_tasks)} 项）")
+        for t in open_tasks[:8]:
+            status_value = t.status.value if hasattr(t.status, "value") else str(t.status)
+            parts = [t.title, f"状态：{task_status_label.get(t.status, status_value)}"]
+            room_name = getattr(getattr(t, "room", None), "name", None)
+            if room_name:
+                parts.append(f"项目：{room_name}")
+            if t.due_date:
+                overdue = "（已逾期）" if t.due_date < today else ""
+                parts.append(f"截止：{t.due_date.isoformat()}{overdue}")
+            if getattr(t.source, "value", str(t.source)) == TaskSource.AI_TWIN.value:
+                parts.append("来自 AI 分身")
+            lines.append("- " + "｜".join(parts))
+        if len(open_tasks) > 8:
+            lines.append(f"- （其余 {len(open_tasks) - 8} 项已省略）")
+    else:
+        lines.append("【我的未完成任务明细】暂无未完成任务")
     return "\n".join(lines)
 
 
@@ -209,11 +243,17 @@ async def _stream_answer(
                     )
                 knowledge_block = f"【企业知识库资料】\n{context}\n\n"
             else:
-                # 检索不到时不许虚构（T04.8）
+                # 检索不到时不许虚构（T04.8）。但不要把「未检索到」套用到非知识库类
+                # 问题（如"我的任务有哪些""某某是不是我的任务"），那类问题应依据
+                # 上下文直接回答，否则会出现"知识库未检索到"万能回复。
                 knowledge_block = (
-                    "【企业知识库检索结果】未检索到相关资料。\n"
-                    "若用户的问题需要企业内部信息，请明确回复：当前企业知识库中未检索到足够信息，"
-                    "并建议在 Knowledge 模块上传相关文档；若是与知识库无关的通用问题，直接回答。\n\n"
+                    "【企业知识库检索结果】本次未检索到相关资料。\n"
+                    "请按以下规则处理，不要一律回复「未检索到」：\n"
+                    "1) 只有当问题确实需要企业制度/产品/项目资料等内部信息时，才回复"
+                    "「当前企业知识库中未检索到足够信息」并建议在 Knowledge 模块上传文档；\n"
+                    "2) 若问题关于本人任务、日程或所在项目，直接依据上方【本人信息】"
+                    "【今日日程】【我参与的项目】【我的未完成任务明细】作答；\n"
+                    "3) 若是与知识库无关的通用问题，直接用你自己的知识回答。\n\n"
                 )
         except Exception:  # noqa: BLE001
             logger.warning("工作台知识检索失败，忽略", exc_info=True)
